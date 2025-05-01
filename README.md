@@ -33,7 +33,7 @@
 To install `ucli`, run the following command:
 
 ```bash
-wget https://raw.githubusercontent.com/mik-tf/ucli/main/ucli.sh
+wget https://raw.githubusercontent.com/ucli-tools/ucli/main/ucli.sh
 bash ./ucli.sh install
 rm ./ucli.sh
 ```
