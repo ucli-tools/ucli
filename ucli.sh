@@ -268,6 +268,11 @@ fetch_and_run() {
     fi
 
     for repo in "$@"; do
+        if [[ "$repo" == .* ]]; then
+            warn "Repository '$repo' starts with a dot and will be skipped."
+            continue # Skip to the next repository
+        fi
+
         if ! is_valid_repo_name "$repo"; then
             error "Invalid repository name: $repo. Only alphanumeric characters and hyphens are allowed."
         fi
