@@ -221,6 +221,30 @@ fetch_repos() {
     return 0
 }
 
+# Function to get tool version from registry
+get_tool_version() {
+    local tool_name="$1"
+    if ! command -v curl &> /dev/null; then
+        error "curl is required but not installed."
+    fi
+
+    local registry_url="https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml"
+    local yaml_content=$(curl -s "$registry_url")
+
+    if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
+        error "Failed to fetch registry data"
+    fi
+
+    # Extract version for specific tool (simple parsing)
+    local version=$(echo "$yaml_content" | grep -A 20 "name: $tool_name" | grep "version:" | head -1 | sed 's/.*version: //' | tr -d ' ')
+
+    if [[ -z "$version" ]]; then
+        error "Could not find version for tool: $tool_name"
+    fi
+
+    echo "$version"
+}
+
 # Function to install prerequisites
 install_prerequisites() {
     log "Installing prerequisites..."
@@ -287,7 +311,11 @@ fetch_and_run() {
         log "Cloning repository ${org}/${repo}..."
         cd "$original_dir" || error "Error changing to original directory"
 
-        if ! git clone --depth 1 "https://github.com/$org/$repo.git" "$tmpdir/$repo"; then
+        # Get the specific version (commit hash) from registry
+        local version=$(get_tool_version "$repo")
+        log "Using version $version for $repo"
+
+        if ! git clone "https://github.com/$org/$repo.git" "$tmpdir/$repo"; then
             warn "Error cloning repository ${org}/${repo}. Skipping..."
             continue
         fi
@@ -295,6 +323,12 @@ fetch_and_run() {
         cd "$tmpdir/$repo" || {
             error "Error changing to directory $tmpdir/$repo"
         }
+
+        # Checkout the specific commit for reproducible builds
+        if ! git checkout "$version"; then
+            warn "Error checking out version $version for ${org}/${repo}. Skipping..."
+            continue
+        fi
 
         log "Running make in $repo..."
         if ! make; then
