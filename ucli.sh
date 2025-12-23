@@ -206,13 +206,13 @@ fetch_repos() {
     log "Fetching tools from UCLI Registry..."
 
     # Fetch and parse YAML to extract official tool names
-    local yaml_content=$(curl -s "$registry_url")
+    local yaml_content=$(curl -s "$registry_url" 2>/dev/null)
     if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
         error "Failed to fetch registry data"
     fi
 
     # Extract official app names from YAML (simple parsing)
-    local repos=$(echo "$yaml_content" | grep -A 1000 "official:" | grep -B 1000 "community:" | grep "name:" | sed 's/.*name: //' | sort)
+    local repos=$(echo "$yaml_content" | grep -A 1000 "official:" | grep -B 1000 "community:" | grep "^  - name:" | sed 's/.*name: //' | sort)
 
     if [[ -z "$repos" ]]; then
         warn "No tools found in registry"
