@@ -40,6 +40,8 @@ show_help() {
   printf "                           If already logged in, switches to the specified organization\n"
   printf "  ${GREEN}logout${NC}                 Unset GitHub organization\n"
   printf "  ${GREEN}list${NC}                   List official tools from UCLI Registry\n"
+  printf "  ${GREEN}versions [tool]${NC}         Show version information for tools\n"
+  printf "                           Use 'versions --all' for all tools, 'versions <tool>' for specific\n"
   printf "  ${GREEN}build repo1 repo2...${NC}   Build tools from specified GitHub repositories\n"
   printf "                           Example: ucli build ucli gits\n"
   printf "  ${GREEN}build-all${NC}              Build all tools listed by 'ucli list'\n"
@@ -418,6 +420,122 @@ build_all_repos() {
     log "Build-all completed!"
 }
 
+# Function to show version information
+show_versions() {
+    local tool_arg="$1"
+
+    if [[ "$tool_arg" == "--all" ]]; then
+        # Show all installed tools with their versions
+        printf "${GREEN}Installed UCLI Tools and Versions:${NC}\n"
+        printf "==================================\n\n"
+
+        local installed_tools=$(get_installed_tools)
+        local official_tools=$(fetch_repos 2>/dev/null)
+
+        if [[ -z "$installed_tools" ]]; then
+            printf "${YELLOW}No UCLI tools are currently installed.${NC}\n"
+            printf "Use ${GREEN}ucli build <tool>${NC} to install tools.\n"
+            return 0
+        fi
+
+        local found_any=false
+        for tool in $installed_tools; do
+            # Check if this tool is in our official registry
+            if echo "$official_tools" | grep -q "^${tool}$"; then
+                found_any=true
+                local version=$(get_tool_version "$tool" 2>/dev/null || echo "unknown")
+                printf "${GREEN}%-15s${NC} %s\n" "$tool:" "${version:0:12}"
+            fi
+        done
+
+        if [[ "$found_any" == "false" ]]; then
+            printf "${YELLOW}No official UCLI tools found.${NC}\n"
+        fi
+
+    elif [[ -n "$tool_arg" ]]; then
+        # Show specific tool version info
+        printf "${GREEN}Version Information for '${tool_arg}':${NC}\n"
+        printf "=====================================\n\n"
+
+        # Check if tool exists in registry
+        local official_tools=$(fetch_repos 2>/dev/null)
+        if ! echo "$official_tools" | grep -q "^${tool_arg}$"; then
+            printf "${RED}Tool '${tool_arg}' not found in UCLI Registry.${NC}\n"
+            printf "Use ${GREEN}ucli list${NC} to see available tools.\n"
+            return 1
+        fi
+
+        # Get detailed version info from registry
+        if ! command -v curl &> /dev/null; then
+            error "curl is required but not installed."
+        fi
+
+        local registry_url="https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml"
+        local yaml_content=$(curl -s "$registry_url")
+
+        if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
+            error "Failed to fetch registry data"
+        fi
+
+        # Extract tool information (simple parsing)
+        local tool_section=$(echo "$yaml_content" | grep -A 50 "name: $tool_arg" | head -50)
+        local version=$(echo "$tool_section" | grep "version:" | head -1 | sed 's/.*version: //' | tr -d ' ')
+        local description=$(echo "$tool_section" | grep "description:" | head -1 | sed 's/.*description: //' | sed 's/^"//' | sed 's/"$//')
+        local repo=$(echo "$tool_section" | grep "repo:" | head -1 | sed 's/.*repo: //' | tr -d ' ')
+        local status=$(echo "$tool_section" | grep "status:" | head -1 | sed 's/.*status: //' | tr -d ' ')
+
+        # Extract version_info if available
+        local commit_date=""
+        local commit_message=""
+        local commit_url=""
+
+        if echo "$tool_section" | grep -q "version_info:"; then
+            local version_info_section=$(echo "$tool_section" | grep -A 10 "version_info:" | head -10)
+            commit_date=$(echo "$version_info_section" | grep "commit_date:" | head -1 | sed 's/.*commit_date: //' | tr -d ' ')
+            commit_message=$(echo "$version_info_section" | grep "commit_message:" | head -1 | sed 's/.*commit_message: //' | sed 's/^"//' | sed 's/"$//')
+            commit_url=$(echo "$version_info_section" | grep "commit_url:" | head -1 | sed 's/.*commit_url: //' | tr -d ' ')
+        fi
+
+        printf "${YELLOW}Name:${NC}         ${tool_arg}\n"
+        printf "${YELLOW}Version:${NC}      ${version:-unknown}\n"
+        printf "${YELLOW}Status:${NC}       ${status:-unknown}\n"
+        printf "${YELLOW}Repository:${NC}   ${repo:-unknown}\n"
+
+        if [[ -n "$description" ]]; then
+            printf "${YELLOW}Description:${NC}  ${description}\n"
+        fi
+
+        if [[ -n "$commit_date" ]]; then
+            printf "${YELLOW}Commit Date:${NC}  ${commit_date}\n"
+        fi
+
+        if [[ -n "$commit_message" ]]; then
+            printf "${YELLOW}Last Commit:${NC}  ${commit_message}\n"
+        fi
+
+        if [[ -n "$commit_url" ]]; then
+            printf "${YELLOW}Commit URL:${NC}   ${commit_url}\n"
+        fi
+
+        printf "\n"
+
+        # Check if tool is installed locally
+        if is_tool_installed "$tool_arg"; then
+            printf "${GREEN}✓ Tool is installed locally${NC}\n"
+        else
+            printf "${YELLOW}⚠ Tool is not installed locally${NC}\n"
+            printf "   Install with: ${GREEN}ucli build ${tool_arg}${NC}\n"
+        fi
+
+    else
+        printf "${RED}Usage: ucli versions <tool-name> or ucli versions --all${NC}\n"
+        printf "Examples:\n"
+        printf "  ${GREEN}ucli versions gits${NC}     - Show version info for gits\n"
+        printf "  ${GREEN}ucli versions --all${NC}    - Show all installed tools\n"
+        return 1
+    fi
+}
+
 # Main function
 main() {
   if [[ -z "$1" ]]; then # Interactive mode
@@ -433,7 +551,8 @@ main() {
       printf "  6. ${GREEN}help${NC}      - Show help information\n"
       printf "  7. ${GREEN}update${NC}    - Update all installed tools\n"
       printf "  8. ${GREEN}prereq${NC}    - Install prerequisites (Ubuntu/Debian)\n"
-      printf "  9. ${GREEN}exit${NC}      - Exit ucli\n\n"
+      printf "  9. ${GREEN}versions${NC}  - Show version information for tools\n"
+      printf "  10. ${GREEN}exit${NC}     - Exit ucli\n\n"
 
       read -r -p "Enter your choice: " choice
 
@@ -450,7 +569,10 @@ main() {
         6|help) show_help ;;
         7|update) update_tools ;;
         8|prereq) install_prerequisites ;;
-        9|exit) exit 0 ;;
+        9|versions)
+          read -r -p "Tool name (or --all for all installed tools): " tool_name
+          show_versions "$tool_name" ;;
+        10|exit) exit 0 ;;
         *) printf "${RED}Invalid choice. Try 'help' for more information.${NC}\n" ;;
       esac
     done
@@ -461,6 +583,7 @@ main() {
       login) login "$2" ;;
       logout) logout ;;
       list) list_repos ;;
+      versions) show_versions "$2" ;;
       build) shift; fetch_and_run "$@" ;; # Remove 'build' and pass remaining args
       build-all) build_all_repos ;;
       update) update_tools ;;
