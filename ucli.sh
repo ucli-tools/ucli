@@ -39,28 +39,30 @@ show_help() {
   printf "  ${GREEN}login [organization]${NC}   Set GitHub organization (defaults to ucli-tools if not specified)\n"
   printf "                           If already logged in, switches to the specified organization\n"
   printf "  ${GREEN}logout${NC}                 Unset GitHub organization\n"
-  printf "  ${GREEN}list${NC}                   List organization repositories\n"
+  printf "  ${GREEN}list${NC}                   List official tools from UCLI Registry\n"
   printf "  ${GREEN}build repo1 repo2...${NC}   Build tools from specified GitHub repositories\n"
-  printf "                           Example: ucli build ucli tscluster\n"
+  printf "                           Example: ucli build ucli gits\n"
   printf "  ${GREEN}build-all${NC}              Build all tools listed by 'ucli list'\n"
   printf "  ${GREEN}update${NC}                 Update all installed tools\n"
   printf "  ${GREEN}prereq${NC}                 Install prerequisites (Ubuntu/Debian)\n"
   printf "  ${GREEN}help${NC}                   Show this help message\n\n"
-  
+
   printf "${YELLOW}Features:${NC}\n"
+  printf "  - Registry-based tool discovery via ${GREEN}registry.ucli.tools${NC}\n"
   printf "  - Default login to ${GREEN}ucli-tools${NC} organization\n"
   printf "  - Command-line interface for all operations\n"
   printf "  - Interactive menu mode\n"
   printf "  - Automatic tool building from GitHub repositories\n\n"
-  
+
   printf "${YELLOW}Examples:${NC}\n"
   printf "  ${GREEN}ucli${NC}                   Run in interactive mode\n"
   printf "  ${GREEN}ucli login ucli-tools${NC}  Log in to ucli-tools organization\n"
   printf "  ${GREEN}ucli build ucli${NC}        Build the ucli tool itself\n"
-  printf "  ${GREEN}ucli list${NC}              List available repositories\n\n"
-  
+  printf "  ${GREEN}ucli list${NC}              List official tools from registry\n\n"
+
   printf "${YELLOW}Interactive mode: Run 'ucli' without arguments\n\n${NC}"
   printf "License: Apache 2.0\n"
+  printf "Registry: https://registry.ucli.tools\n"
   printf "Repository: https://github.com/ucli-tools/ucli\n\n"
   read -r -p "${YELLOW}Press ENTER to return to main menu (interactive mode) or exit (command-line mode)...${NC}"
 }
@@ -190,23 +192,28 @@ cleanup() {
     fi
 }
 
-# Function to fetch repositories from GitHub API
+# Function to fetch repositories from UCLI Registry
 fetch_repos() {
-    if ! check_login; then
-        return 1
-    fi
-
     if ! command -v curl &> /dev/null; then
         error "curl is required but not installed."
     fi
 
-    local repos=$(curl -s "https://api.github.com/users/${ORG}/repos" |
-                 grep '"name":' |
-                 sed -E 's/.*"name": "([^"]+)".*/\1/' |
-                 grep -v "Apache License 2.0" |
-                 sort)
+    # Fetch from UCLI Registry API
+    local registry_url="https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml"
+
+    log "Fetching tools from UCLI Registry..."
+
+    # Fetch and parse YAML to extract official tool names
+    local yaml_content=$(curl -s "$registry_url")
+    if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
+        error "Failed to fetch registry data"
+    fi
+
+    # Extract official app names from YAML (simple parsing)
+    local repos=$(echo "$yaml_content" | grep -A 1000 "official:" | grep -B 1000 "community:" | grep "name:" | sed 's/.*name: //' | sort)
 
     if [[ -z "$repos" ]]; then
+        warn "No tools found in registry"
         return 1
     fi
 
@@ -387,7 +394,7 @@ main() {
       printf "  1. ${GREEN}login${NC}     - Set your GitHub organization (default: ucli-tools)\n"
       printf "  2. ${GREEN}build${NC}     - Build a tool from a GitHub repository\n"
       printf "  3. ${GREEN}build-all${NC} - Build all tools listed by 'ucli list'\n"
-      printf "  4. ${GREEN}list${NC}      - List organization repositories\n"
+      printf "  4. ${GREEN}list${NC}      - List official tools from registry\n"
       printf "  5. ${GREEN}logout${NC}    - Unset your GitHub organization\n"
       printf "  6. ${GREEN}help${NC}      - Show help information\n"
       printf "  7. ${GREEN}update${NC}    - Update all installed tools\n"
