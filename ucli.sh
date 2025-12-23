@@ -9,17 +9,17 @@ ENV_FILE="$HOME/.ucli_env"
 
 # Logging functions for consistent output formatting
 log() {
-    echo -e "${GREEN}[UPDATE]${NC} $1"
+    echo -e "${GREEN}[UPDATE]${NC} $1" >&2
     sleep 1
 }
 
 warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    echo -e "${YELLOW}[WARNING]${NC} $1" >&2
     sleep 1
 }
 
 error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
     sleep 1
     exit 1
 }
