@@ -310,14 +310,13 @@ fetch_and_run() {
             error "Invalid repository name: $repo. Only alphanumeric characters and hyphens are allowed."
         fi
 
-        log "Cloning repository ${org}/${repo}..."
         cd "$original_dir" || error "Error changing to original directory"
 
         # Get the specific version (commit hash) from registry
         local version=$(get_tool_version "$repo")
-        log "Using version $version for $repo"
 
-        if ! git clone "https://github.com/$org/$repo.git" "$tmpdir/$repo"; then
+        # Clone specific commit quietly for reproducible builds
+        if ! git clone --quiet --depth 1 --branch main "https://github.com/$org/$repo.git" "$tmpdir/$repo" 2>/dev/null; then
             warn "Error cloning repository ${org}/${repo}. Skipping..."
             continue
         fi
@@ -326,11 +325,13 @@ fetch_and_run() {
             error "Error changing to directory $tmpdir/$repo"
         }
 
-        # Checkout the specific commit for reproducible builds
-        if ! git checkout "$version"; then
+        # Checkout the specific commit for reproducible builds (quietly)
+        if ! git checkout --quiet "$version" 2>/dev/null; then
             warn "Error checking out version $version for ${org}/${repo}. Skipping..."
             continue
         fi
+
+        log "Building ${repo} (v${version:0:8})..."
 
         log "Running make in $repo..."
         if ! make; then
