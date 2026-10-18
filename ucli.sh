@@ -1,10 +1,22 @@
 #!/bin/bash
 
-# ANSI color codes
-RED=$(printf '\033[0;31m')
-GREEN=$(printf '\033[0;32m')
-YELLOW=$(printf '\033[0;33m')
-NC=$(printf '\033[0m')
+# Stamped with the commit by `ucli install`; "dev" when run from a clone.
+UCLI_BUILD_ID="dev"
+
+# ANSI colours: only on a terminal, and never when NO_COLOR is set (no-color.org).
+# RED/GREEN/YELLOW/NC colour stdout; E_* colour the log functions, which write to stderr.
+RED=""; GREEN=""; YELLOW=""; NC=""
+E_RED=""; E_GREEN=""; E_YELLOW=""; E_NC=""
+if [[ -z "${NO_COLOR:-}" ]]; then
+    if [[ -t 1 ]]; then
+        RED=$(printf '\033[0;31m'); GREEN=$(printf '\033[0;32m')
+        YELLOW=$(printf '\033[0;33m'); NC=$(printf '\033[0m')
+    fi
+    if [[ -t 2 ]]; then
+        E_RED=$(printf '\033[0;31m'); E_GREEN=$(printf '\033[0;32m')
+        E_YELLOW=$(printf '\033[0;33m'); E_NC=$(printf '\033[0m')
+    fi
+fi
 ENV_FILE="$HOME/.ucli_env"
 
 # Test seams (defaults are the production values)
@@ -13,24 +25,26 @@ UCLI_GIT_BASE="${UCLI_GIT_BASE:-https://github.com}"
 UCLI_UV_INSTALL_URL="${UCLI_UV_INSTALL_URL:-https://astral.sh/uv/install.sh}"
 UCLI_INSTALL_DIR="${UCLI_INSTALL_DIR:-/usr/local/bin}"
 
-# Pause used by the logging functions; UCLI_NO_SLEEP=1 disables it
+# Pause used by the logging functions: only inside the interactive menu
+# (UCLI_MENU=1), so a person can read each message; UCLI_NO_SLEEP=1 disables it.
 nap() {
-    [[ -n "${UCLI_NO_SLEEP:-}" ]] || sleep 1
+    [[ -n "${UCLI_MENU:-}" && -z "${UCLI_NO_SLEEP:-}" ]] || return 0
+    sleep 1
 }
 
 # Logging functions for consistent output formatting
 log() {
-    echo -e "${GREEN}[UPDATE]${NC} $1" >&2
+    echo -e "${E_GREEN}[UPDATE]${E_NC} $1" >&2
     nap
 }
 
 warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1" >&2
+    echo -e "${E_YELLOW}[WARNING]${E_NC} $1" >&2
     nap
 }
 
 error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
+    echo -e "${E_RED}[ERROR]${E_NC} $1" >&2
     nap
     exit 1
 }
@@ -40,10 +54,20 @@ is_valid_repo_name() {
   [[ "$1" =~ ^[a-zA-Z0-9-]+$ ]]
 }
 
-# Help function
-show_help() {
-  log "Displaying help message"
-  printf "\n${GREEN}UCLI - Universal Command Line Interface Tool${NC}\n\n"
+# The version: the stamped commit, or "dev" (with the short commit of a clone).
+show_version() {
+  local id="$UCLI_BUILD_ID" d c
+  if [[ "$id" == "dev" ]]; then
+    d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    c="$(git -C "$d" rev-parse --short HEAD 2>/dev/null)"
+    if [[ "$c" =~ ^[0-9a-f]{7,40}$ ]]; then id="dev ($c)"; fi
+  fi
+  printf 'ucli %s\n' "$id"
+}
+
+# The command list alone (short: this is what a script or a closed stdin gets).
+show_commands() {
+  printf "${GREEN}UCLI - Universal Command Line Interface Tool${NC}\n"
   printf "Commands:\n"
   printf "  ${GREEN}install${NC}                Install ucli to /usr/local/bin\n"
   printf "  ${GREEN}uninstall${NC}              Remove ucli from /usr/local/bin\n"
@@ -58,9 +82,15 @@ show_help() {
   printf "  ${GREEN}build-all${NC}              Build all tools listed by 'ucli list'\n"
   printf "  ${GREEN}update${NC}                 Update all installed tools\n"
   printf "  ${GREEN}prereq${NC}                 Install prerequisites (Ubuntu/Debian)\n"
-  printf "  ${GREEN}help${NC}                   Show this help message\n\n"
+  printf "  ${GREEN}help${NC}                   Show this help message (also --help, -h)\n"
+  printf "  ${GREEN}version${NC}                Show the ucli version (also --version)\n"
+}
 
-  printf "${YELLOW}Features:${NC}\n"
+# Help function. "menu" as the first argument pauses afterwards (interactive menu only).
+show_help() {
+  printf "\n"
+  show_commands
+  printf "\n${YELLOW}Features:${NC}\n"
   printf "  - Registry-based tool discovery via ${GREEN}registry.ucli.tools${NC}\n"
   printf "  - Default login to ${GREEN}ucli-tools${NC} organization\n"
   printf "  - Command-line interface for all operations\n"
@@ -77,14 +107,16 @@ show_help() {
   printf "License: Apache 2.0\n"
   printf "Registry: https://registry.ucli.tools\n"
   printf "Repository: https://github.com/ucli-tools/ucli\n\n"
-  read -r -p "${YELLOW}Press ENTER to return to main menu (interactive mode) or exit (command-line mode)...${NC}" || true
+  if [[ "${1:-}" == "menu" ]]; then
+    read -r -p "${YELLOW}Press ENTER to return to main menu...${NC}" || true
+  fi
 }
 
 # Install script. Atomic: the new file is written next to the target (same
 # directory, so the final mv is a rename) and moved into place; the running script
 # is never overwritten in place, and a failed step leaves the old binary untouched.
 install() {
-  local dir="$UCLI_INSTALL_DIR" tmp
+  local dir="$UCLI_INSTALL_DIR" tmp id sd
   if [[ ! -d "$dir" ]]; then
     if sudo mkdir -p "$dir"; then
       log "Directory $dir created successfully."
@@ -93,7 +125,13 @@ install() {
     fi
   fi
   tmp="$dir/.ucli.new.$$"
-  if sudo cp "$0" "$tmp" && sudo chmod +x "$tmp" && sudo mv -f "$tmp" "$dir/ucli"; then
+  # Stamp the commit when run from a git clone (a checkout of the pinned commit).
+  sd="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+  id="$(git -C "$sd" rev-parse HEAD 2>/dev/null)"
+  [[ "$id" =~ ^[0-9a-f]{7,40}$ ]] || id=""
+  if sudo cp "$0" "$tmp" \
+     && { [[ -z "$id" ]] || sed "s/^UCLI_BUILD_ID=.*/UCLI_BUILD_ID=\"$id\"/" "$0" | sudo tee "$tmp" > /dev/null; } \
+     && sudo chmod +x "$tmp" && sudo mv -f "$tmp" "$dir/ucli"; then
       log "ucli installed to $dir."
   else
       sudo rm -f "$tmp" > /dev/null 2>&1
@@ -401,8 +439,9 @@ install_prerequisites() {
     fi
 }
 
-# Function to list repositories
+# Function to list repositories. "menu" as the first argument pauses afterwards.
 list_repos() {
+    local menu="${1:-}"
     log "Fetching repositories for $ORG..."
     registry_load || error "Failed to fetch registry data"
     local repos
@@ -410,14 +449,19 @@ list_repos() {
 
     if [[ $? -ne 0 ]]; then
         warn "Failed to fetch repository data"
-        read -n 1 -s -r -p "Press ENTER to return to main menu..." || { echo "No input; run 'ucli help'."; exit 1; }
+        if [[ "$menu" == "menu" ]]; then
+            read -n 1 -s -r -p "Press ENTER to return to main menu..." || { echo "No input; run 'ucli help'."; exit 1; }
+        fi
         return 1
     fi
 
     echo "$repos"
     log "Repository list displayed"
-    log "Press ENTER to return to main menu..."
-    read -r || { echo "No input; run 'ucli help'."; exit 1; }
+    if [[ "$menu" == "menu" ]]; then
+        log "Press ENTER to return to main menu..."
+        read -r || { echo "No input; run 'ucli help'."; exit 1; }
+    fi
+    return 0
 }
 
 # Tools that need uv before they can be built
@@ -828,9 +872,11 @@ show_versions() {
 main() {
   if [[ -z "$1" ]]; then # Interactive mode
     if [[ ! -t 0 ]]; then
-      show_help
-      exit 0
+      show_commands
+      printf "Run 'ucli help' for details.\n"
+      exit 2
     fi
+    UCLI_MENU=1
     while true; do
       clear
       printf "${GREEN}Welcome to UCLI, the Universal Command Line Interface Tool!${NC}\n\n"
@@ -856,9 +902,9 @@ main() {
           read -r -p "Repository names (space-separated): " repos || { echo "No input; run 'ucli help'."; exit 1; }
           fetch_and_run $repos ;;
         3|build-all) build_all_repos ;;
-        4|list) list_repos ;;
+        4|list) list_repos menu ;;
         5|logout) logout ;;
-        6|help) show_help ;;
+        6|help) show_help menu ;;
         7|update) update_tools ;;
         8|prereq) install_prerequisites ;;
         9|versions)
@@ -880,7 +926,8 @@ main() {
       build-all) build_all_repos ;;
       update) update_tools ;;
       prereq) install_prerequisites ;;
-      help) show_help ;;
+      help|--help|-h) show_help ;;
+      version|--version|-V) show_version ;;
       *) printf "${RED}Invalid command. Use 'ucli help' for usage information.\n${NC}"; exit 1 ;;
     esac
   fi

@@ -6,14 +6,14 @@ lines_of() { wc -l < "$SB/out" | tr -d ' '; }
 
 t_eof_empty_pipe() {
   run -i ''
-  assert_rc 0
+  assert_rc 2
   [[ "$(lines_of)" -lt 50 ]] || fail "too many output lines: $(lines_of)"
   assert_out_has "UCLI - Universal Command Line Interface Tool"
 }
 
 t_eof_dev_null() {
   run
-  assert_rc 0
+  assert_rc 2
   [[ "$(lines_of)" -lt 50 ]] || fail "too many output lines: $(lines_of)"
   assert_out_has "Commands:"
 }

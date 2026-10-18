@@ -18,7 +18,7 @@ t_help() {
 
 t_no_args_non_tty_shows_help() {
   run
-  assert_rc 0
+  assert_rc 2
   assert_out_has "Commands:"
 }
 
@@ -36,12 +36,12 @@ t_list_prints_fixture_tools_sorted() {
   assert_err_has "Repository list displayed"
 }
 
-t_list_without_stdin_exits_1_after_printing() {
-  # known quirk: the final `read` fails on non-tty stdin
+t_list_without_stdin_exits_0() {
+  # the "Press ENTER" pause is for the interactive menu only
   run list
-  assert_rc 1
+  assert_rc 0
   assert_out_has "uclitest-alpha"
-  assert_out_has "No input; run 'ucli help'."
+  assert_out_lacks "No input"
 }
 
 t_list_creates_default_login_only_in_sandbox() {
@@ -196,9 +196,12 @@ t_update_with_no_tools_installed() {
 }
 
 t_logging_sleeps_unless_disabled() {
-  run help
+  # sleeping is for the interactive menu (UCLI_MENU=1) only
+  UCLI_MENU=1 run help
   assert_eq "$(wc -c < "$SB/sleep.log" | tr -d ' ')" "0" "sleep log size with UCLI_NO_SLEEP=1"
   UCLI_NO_SLEEP= run help
+  assert_eq "$(wc -c < "$SB/sleep.log" | tr -d ' ')" "0" "sleep log size in command-line mode"
+  UCLI_MENU=1 UCLI_NO_SLEEP= run list
   [[ -s "$SB/sleep.log" ]] || fail "sleep not called when UCLI_NO_SLEEP is empty"
 }
 
