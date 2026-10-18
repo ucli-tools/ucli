@@ -3,39 +3,6 @@
 # Uses real git and real make against file:// fixture repos inside the sandbox HOME.
 . "$(dirname "$0")/helpers.sh"
 
-# real_tools: use the real git and make (the default stubs only record calls).
-real_tools() {
-  REAL_GIT="$(PATH="$ORIG_PATH" command -v git)"
-  REAL_MAKE="$(PATH="$ORIG_PATH" command -v make)"
-  make_stub git 'echo "git $*" >> "'"$SB"'/calls.log"; exec "'"$REAL_GIT"'" "$@"'
-  make_stub make 'echo "make $*" >> "'"$SB"'/calls.log"; exec "'"$REAL_MAKE"'" "$@"'
-  export UCLI_GIT_BASE="file://$SB/git"
-  : > "$SB/reg.yaml"
-  printf 'apps:\n  official:\n' > "$SB/reg.yaml"
-  export UCLI_REGISTRY_URL="file://$SB/reg.yaml"
-}
-
-# add_tool <name> <Makefile text or "-" for none>: one-commit repo, listed in the registry.
-add_tool() {
-  local name="$1" mk="$2"
-  local r="$SB/git/ucli-tools/$name.git"
-  mkdir -p "$r"
-  local g=("$REAL_GIT" -C "$r" -c user.name=test -c user.email=test@example.invalid)
-  "${g[@]}" init --quiet
-  "${g[@]}" symbolic-ref HEAD refs/heads/main
-  echo "$name" > "$r/README"
-  if [[ "$mk" != "-" ]]; then printf '%s' "$mk" > "$r/Makefile"; fi
-  "${g[@]}" add -A
-  "${g[@]}" commit --quiet -m init
-  printf '  - name: %s\n    repo: github.com/ucli-tools/%s\n    version: %s\n' \
-    "$name" "$name" "$("${g[@]}" rev-parse HEAD)" >> "$SB/reg.yaml"
-}
-
-# A Makefile whose first target is help and whose build target installs a script.
-installing_makefile() { # name
-  printf 'help:\n\t@echo help-ran > "$(HOME)/help_ran"\n\nbuild:\n\t@mkdir -p "$(HOME)/.local/bin"\n\t@printf "#!/bin/sh\\necho %s\\n" > "$(HOME)/.local/bin/%s"\n\t@chmod +x "$(HOME)/.local/bin/%s"\n' "$1" "$1" "$1"
-}
-
 t_help_first_makefile_installs_through_build() {
   real_tools
   add_tool helpfirst "$(installing_makefile helpfirst)"

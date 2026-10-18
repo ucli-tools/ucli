@@ -11,6 +11,7 @@ ENV_FILE="$HOME/.ucli_env"
 UCLI_REGISTRY_URL="${UCLI_REGISTRY_URL:-https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml}"
 UCLI_GIT_BASE="${UCLI_GIT_BASE:-https://github.com}"
 UCLI_UV_INSTALL_URL="${UCLI_UV_INSTALL_URL:-https://astral.sh/uv/install.sh}"
+UCLI_INSTALL_DIR="${UCLI_INSTALL_DIR:-/usr/local/bin}"
 
 # Pause used by the logging functions; UCLI_NO_SLEEP=1 disables it
 nap() {
@@ -79,18 +80,23 @@ show_help() {
   read -r -p "${YELLOW}Press ENTER to return to main menu (interactive mode) or exit (command-line mode)...${NC}" || true
 }
 
-# Install script
+# Install script. Atomic: the new file is written next to the target (same
+# directory, so the final mv is a rename) and moved into place; the running script
+# is never overwritten in place, and a failed step leaves the old binary untouched.
 install() {
-  if [[ ! -d "/usr/local/bin" ]]; then
-    if sudo mkdir -p /usr/local/bin; then
-      log "Directory /usr/local/bin created successfully."
+  local dir="$UCLI_INSTALL_DIR" tmp
+  if [[ ! -d "$dir" ]]; then
+    if sudo mkdir -p "$dir"; then
+      log "Directory $dir created successfully."
     else
-      error "Error creating directory /usr/local/bin."
+      error "Error creating directory $dir."
     fi
   fi
-  if sudo cp "$0" /usr/local/bin/ucli && sudo chmod +x /usr/local/bin/ucli; then
-      log "ucli installed to /usr/local/bin."
+  tmp="$dir/.ucli.new.$$"
+  if sudo cp "$0" "$tmp" && sudo chmod +x "$tmp" && sudo mv -f "$tmp" "$dir/ucli"; then
+      log "ucli installed to $dir."
   else
+      sudo rm -f "$tmp" > /dev/null 2>&1
       error "Error installing ucli."
   fi
 }
@@ -522,6 +528,9 @@ fetch_and_run() {
         fi
 
         log "Build successful for $repo!"
+        local where
+        if [[ "$repo" == "ucli" ]]; then where="$UCLI_INSTALL_DIR/ucli"; else where=$(tool_path "$repo" || echo "$(user_bin_dir)/$repo"); fi
+        state_record "$repo" "$version" "$where"
         built="$built $repo"
     done
 
@@ -534,22 +543,87 @@ fetch_and_run() {
     return $rc
 }
 
-# Function to check if a tool is installed
+# Installed-state record: name<TAB>commit<TAB>date<TAB>path, one line per tool.
+ucli_state_file() {
+    echo "${XDG_STATE_HOME:-$HOME/.local/state}/ucli/installed.tsv"
+}
+
+user_bin_dir() {
+    echo "${XDG_BIN_HOME:-$HOME/.local/bin}"
+}
+
+# state_has <name>: 0 when the tool has a record.
+state_has() {
+    local f
+    f=$(ucli_state_file)
+    [[ -f "$f" ]] && awk -F '\t' -v n="$1" '$1 == n { found = 1 } END { exit !found }' "$f"
+}
+
+# state_field <name> <column>: the field of the tool's record (empty if none).
+state_field() {
+    local f
+    f=$(ucli_state_file)
+    [[ -f "$f" ]] || return 0
+    awk -F '\t' -v n="$1" -v c="$2" '$1 == n { print $c; exit }' "$f"
+}
+
+# state_record <name> <commit> [path]: replace the tool's line. The file is
+# rewritten through a temp file in the same directory and mv'd into place.
+state_record() {
+    local name="$1" commit="$2" path="${3:-}" f dir tmp
+    f=$(ucli_state_file)
+    dir=$(dirname "$f")
+    mkdir -p "$dir" || { warn "Could not create $dir to record $name"; return 1; }
+    tmp=$(mktemp "$dir/.installed.XXXXXX") || { warn "Could not record $name"; return 1; }
+    {
+        [[ -f "$f" ]] && awk -F '\t' -v n="$name" '$1 != n && $1 != "ms2md"' "$f"
+        printf '%s\t%s\t%s\t%s\n' "$name" "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$path"
+    } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "Could not record $name"; return 1; }
+}
+
+# legacy_tool_path <name>: path of a pre-existing install, found with command -v
+# only when it lives in the system bin dir or the user bin dir.
+legacy_tool_path() {
+    local found
+    found=$(command -v "$1" 2>/dev/null) || return 1
+    [[ "$found" == /* ]] || return 1
+    if [[ "$found" == "$UCLI_INSTALL_DIR/$1" || "$found" == "$(user_bin_dir)/$1" ]]; then
+        echo "$found"
+        return 0
+    fi
+    return 1
+}
+
+# Function to check if a tool is installed: listed in the state file, or an older
+# install found in an allowed directory (never an unrelated program elsewhere).
 is_tool_installed() {
-    local tool="$1"
-    [[ -f "/usr/local/bin/$tool" ]]
+    state_has "$1" || legacy_tool_path "$1" > /dev/null
 }
 
-# Function to get installed tools
+# tool_path <name>: where the tool lives (best effort, may be empty).
+tool_path() {
+    local p
+    if p=$(legacy_tool_path "$1"); then echo "$p"; return 0; fi
+    p=$(state_field "$1" 4)
+    [[ -n "$p" ]] && { echo "$p"; return 0; }
+    return 1
+}
+
+# Installed official tools, one per line. Needs the registry loaded.
 get_installed_tools() {
-    local installed=()
-    for tool in /usr/local/bin/*; do
-        [[ -f "$tool" ]] && installed+=($(basename "$tool"))
+    local tool
+    registry_awk names | sort | while IFS= read -r tool; do
+        if is_tool_installed "$tool"; then echo "$tool"; fi
     done
-    echo "${installed[@]}"
 }
 
-# Update function
+# installed_commit <name>: recorded commit, or empty when unknown.
+installed_commit() {
+    state_field "$1" 2
+}
+
+# Update: ucli updates itself first (and hands over to the new file), then only
+# tools whose recorded commit differs from the registry pin are rebuilt.
 update_tools() {
     log "Fetching repository list..."
     registry_load || error "Failed to fetch registry data"
@@ -560,26 +634,50 @@ update_tools() {
         error "Failed to fetch repository data"
     fi
 
-    local installed_tools=()
-    for repo in $repos; do
-        if is_tool_installed "$repo"; then
-            installed_tools+=("$repo")
+    local rc=0 tool pin rec
+    local to_build=()
+
+    # Self-update first
+    if [[ -z "${UCLI_SELF_UPDATED:-}" ]] && printf '%s\n' "$repos" | grep -Fxq -- ucli \
+        && is_tool_installed ucli; then
+        pin=$(get_tool_version ucli) || pin=""
+        rec=$(installed_commit ucli)
+        if [[ -n "$pin" && "$pin" != "$rec" ]]; then
+            log "Updating ucli itself first..."
+            if fetch_and_run ucli; then
+                log "ucli updated; continuing with the new version."
+                UCLI_SELF_UPDATED=1 exec "$UCLI_INSTALL_DIR/ucli" update
+            fi
+            rc=1
+        fi
+    fi
+
+    local found=0
+    for tool in $repos; do
+        [[ "$tool" == "ucli" ]] && continue
+        is_tool_installed "$tool" || continue
+        found=$((found + 1))
+        pin=$(get_tool_version "$tool") || { rc=1; continue; }
+        rec=$(installed_commit "$tool")
+        if [[ "$pin" == "$rec" ]]; then
+            log "$tool is up to date (${pin:0:8})."
+        else
+            to_build+=("$tool")
         fi
     done
 
-    if [[ ${#installed_tools[@]} -eq 0 ]]; then
+    if [[ $found -eq 0 && $rc -eq 0 ]]; then
         warn "No installed tools found to update"
         return 0
     fi
 
-    log "Found ${#installed_tools[@]} installed tools. Starting update..."
-
-    for tool in "${installed_tools[@]}"; do
-        log "Updating $tool..."
-        fetch_and_run "$tool"
-    done
+    if [[ ${#to_build[@]} -gt 0 ]]; then
+        log "Rebuilding ${#to_build[@]} tool(s): ${to_build[*]}"
+        fetch_and_run "${to_build[@]}" || rc=1
+    fi
 
     log "Update completed!"
+    return $rc
 }
 
 # Function to build all repositories
@@ -618,10 +716,9 @@ show_versions() {
         printf "${GREEN}Installed UCLI Tools and Versions:${NC}\n"
         printf "==================================\n\n"
 
-        local installed_tools=$(get_installed_tools)
         registry_load || true
-        local official_tools
-        official_tools=$(fetch_repos 2>/dev/null)
+        local installed_tools
+        installed_tools=$(get_installed_tools 2>/dev/null)
 
         if [[ -z "$installed_tools" ]]; then
             printf "${YELLOW}No UCLI tools are currently installed.${NC}\n"
@@ -629,19 +726,19 @@ show_versions() {
             return 0
         fi
 
-        local found_any=false
+        local tool pin rec note
         for tool in $installed_tools; do
-            # Check if this tool is in our official registry
-            if echo "$official_tools" | grep -Fxq -- "${tool}"; then
-                found_any=true
-                local version=$(get_tool_version "$tool" 2>/dev/null || echo "unknown")
-                printf "${GREEN}%-15s${NC} %s\n" "$tool:" "${version:0:12}"
+            pin=$(get_tool_version "$tool" 2>/dev/null || echo "unknown")
+            rec=$(installed_commit "$tool")
+            if [[ -z "$rec" ]]; then
+                note="installed, commit unknown; update available"
+            elif [[ "$rec" == "$pin" ]]; then
+                note="installed ${rec:0:12}; up to date"
+            else
+                note="installed ${rec:0:12}; update available"
             fi
+            printf "${GREEN}%-15s${NC} pin %s  %s\n" "$tool:" "${pin:0:12}" "$note"
         done
-
-        if [[ "$found_any" == "false" ]]; then
-            printf "${YELLOW}No official UCLI tools found.${NC}\n"
-        fi
 
     elif [[ -n "$tool_arg" ]]; then
         # Show specific tool version info
@@ -697,7 +794,22 @@ show_versions() {
 
         # Check if tool is installed locally
         if is_tool_installed "$tool_arg"; then
+            local irec ipath
+            irec=$(installed_commit "$tool_arg")
+            ipath=$(tool_path "$tool_arg" || true)
             printf "${GREEN}✓ Tool is installed locally${NC}\n"
+            printf "${YELLOW}Pin:${NC}          ${version:-unknown}\n"
+            if [[ -z "$irec" ]]; then
+                printf "${YELLOW}Installed:${NC}    installed, commit unknown\n"
+            else
+                printf "${YELLOW}Installed:${NC}    ${irec}\n"
+            fi
+            printf "${YELLOW}Path:${NC}         ${ipath:-unknown}\n"
+            if [[ "$irec" != "$version" ]]; then
+                printf "${YELLOW}Update available:${NC} yes (run: ucli update)\n"
+            else
+                printf "${GREEN}Up to date${NC}\n"
+            fi
         else
             printf "${YELLOW}⚠ Tool is not installed locally${NC}\n"
             printf "   Install with: ${GREEN}ucli build ${tool_arg}${NC}\n"
@@ -774,4 +886,4 @@ main() {
   fi
 }
 
-main "$@"
+main "$@"; exit $?

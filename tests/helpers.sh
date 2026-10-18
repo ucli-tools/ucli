@@ -85,6 +85,8 @@ esac'
   export UCLI_REGISTRY_URL="$FIXTURE_REGISTRY"
   export UCLI_GIT_BASE="file://$SB/no-such-git-base"
   export UCLI_NO_SLEEP=1
+  mkdir -p "$SB/sysbin"
+  export UCLI_INSTALL_DIR="$SB/sysbin"
   unset ORG UCLI_FORCE_FULL_CLONE
 }
 
@@ -103,6 +105,59 @@ write_big_registry() {
     done
     echo "  community: []"
   } > "$f"
+}
+
+# real_tools: use the real git and make (the default stubs only record calls).
+real_tools() {
+  REAL_GIT="$(PATH="$ORIG_PATH" command -v git)"
+  REAL_MAKE="$(PATH="$ORIG_PATH" command -v make)"
+  make_stub git 'echo "git $*" >> "'"$SB"'/calls.log"; exec "'"$REAL_GIT"'" "$@"'
+  make_stub make 'echo "make $*" >> "'"$SB"'/calls.log"; exec "'"$REAL_MAKE"'" "$@"'
+  export UCLI_GIT_BASE="file://$SB/git"
+  : > "$SB/reg.yaml"
+  printf 'apps:\n  official:\n' > "$SB/reg.yaml"
+  export UCLI_REGISTRY_URL="file://$SB/reg.yaml"
+}
+
+# add_tool <name> <Makefile text or "-" for none>: one-commit repo, listed in the registry.
+add_tool() {
+  local name="$1" mk="$2"
+  local r="$SB/git/ucli-tools/$name.git"
+  mkdir -p "$r"
+  local g=("$REAL_GIT" -C "$r" -c user.name=test -c user.email=test@example.invalid)
+  "${g[@]}" init --quiet
+  "${g[@]}" symbolic-ref HEAD refs/heads/main
+  echo "$name" > "$r/README"
+  if [[ "$mk" != "-" ]]; then printf '%s' "$mk" > "$r/Makefile"; fi
+  if [[ -n "${3:-}" ]]; then cp "$3" "$r/ucli.sh"; fi
+  "${g[@]}" add -A
+  "${g[@]}" commit --quiet -m init
+  printf '  - name: %s\n    repo: github.com/ucli-tools/%s\n    version: %s\n' \
+    "$name" "$name" "$("${g[@]}" rev-parse HEAD)" >> "$SB/reg.yaml"
+}
+
+# A Makefile whose first target is help and whose build target installs a script.
+installing_makefile() { # name
+  printf 'help:\n\t@echo help-ran > "$(HOME)/help_ran"\n\nbuild:\n\t@mkdir -p "$(HOME)/.local/bin"\n\t@printf "#!/bin/sh\\necho %s\\n" > "$(HOME)/.local/bin/%s"\n\t@chmod +x "$(HOME)/.local/bin/%s"\n' "$1" "$1" "$1"
+}
+
+# bump_tool <name>: add a commit to the tool's repo and move its registry pin to it.
+bump_tool() {
+  local name="$1"
+  local r="$SB/git/ucli-tools/$name.git"
+  local g=("$REAL_GIT" -C "$r" -c user.name=test -c user.email=test@example.invalid)
+  local old new
+  old="$("${g[@]}" rev-parse HEAD)"
+  echo "bump" >> "$r/README"
+  "${g[@]}" add -A
+  "${g[@]}" commit --quiet -m bump
+  new="$("${g[@]}" rev-parse HEAD)"
+  sed "s/$old/$new/" "$SB/reg.yaml" > "$SB/reg.yaml.new" && mv "$SB/reg.yaml.new" "$SB/reg.yaml"
+}
+
+# pin_of <name>: the tool's current registry pin.
+pin_of() {
+  "$REAL_GIT" -C "$SB/git/ucli-tools/$1.git" rev-parse HEAD
 }
 
 # run [-i stdin-text] args...   runs ./ucli.sh; sets RC; output in $SB/out and $SB/err.
