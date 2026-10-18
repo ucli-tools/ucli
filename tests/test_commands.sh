@@ -199,9 +199,9 @@ t_logging_sleeps_unless_disabled() {
   # sleeping is for the interactive menu (UCLI_MENU=1) only
   UCLI_MENU=1 run help
   assert_eq "$(wc -c < "$SB/sleep.log" | tr -d ' ')" "0" "sleep log size with UCLI_NO_SLEEP=1"
-  UCLI_NO_SLEEP= run help
+  UCLI_NO_SLEEP='' run help
   assert_eq "$(wc -c < "$SB/sleep.log" | tr -d ' ')" "0" "sleep log size in command-line mode"
-  UCLI_MENU=1 UCLI_NO_SLEEP= run list
+  UCLI_MENU=1 UCLI_NO_SLEEP='' run list
   [[ -s "$SB/sleep.log" ]] || fail "sleep not called when UCLI_NO_SLEEP is empty"
 }
 

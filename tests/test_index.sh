@@ -2,7 +2,6 @@
 # ucli prefers registry index.tsv, falls back to apps.yaml (slice 11).
 . "$(dirname "$0")/helpers.sh"
 
-TAB="$(printf '\t')"
 SHA_1=1111111111111111111111111111111111111111
 SHA_2=2222222222222222222222222222222222222222
 SHA_9=9999999999999999999999999999999999999999

@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016,SC2012  # test stubs are written as single-quoted scripts; ls is only used to count files
 # Install without sudo, in-place update of a system copy, opt-in move, remove, uninstall (slice 14).
 # The old system copy is a fixture file named by UCLI_LEGACY_BIN; nothing touches /usr/local/bin.
 . "$(dirname "$0")/helpers.sh"

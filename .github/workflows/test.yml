@@ -25,18 +25,30 @@ jobs:
           /bin/bash --version | head -n 1
           bash --version | head -n 1
 
-      - name: Install shellcheck
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: "0.10.0"
         run: |
-          if command -v shellcheck >/dev/null 2>&1; then
-            echo "shellcheck already present"
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            brew install shellcheck
+          if command -v shellcheck >/dev/null 2>&1 && shellcheck --version | grep -q "^version: $SHELLCHECK_VERSION\$"; then
+            echo "shellcheck $SHELLCHECK_VERSION already present"
           else
-            sudo apt-get update && sudo apt-get install -y shellcheck
+            case "$(uname -s)-$(uname -m)" in
+              Linux-x86_64)  plat=linux.x86_64 ;;
+              Linux-aarch64) plat=linux.aarch64 ;;
+              Darwin-arm64)  plat=darwin.aarch64 ;;
+              Darwin-x86_64) plat=darwin.x86_64 ;;
+              *) echo "no shellcheck build for $(uname -s)-$(uname -m)"; exit 1 ;;
+            esac
+            dir="$RUNNER_TEMP/shellcheck-bin"
+            mkdir -p "$dir"
+            curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.${plat}.tar.xz" \
+              | tar -xJ -C "$dir" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+            echo "$dir" >> "$GITHUB_PATH"
+            PATH="$dir:$PATH"
           fi
           shellcheck --version
 
-      - name: Lint (shellcheck, errors only)
+      - name: Lint (shellcheck, default severity, blocking)
         run: make lint
 
       - name: Banned bash-4 features

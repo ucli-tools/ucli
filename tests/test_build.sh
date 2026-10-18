@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016,SC2012  # test stubs are written as single-quoted scripts; ls is only used to count files
 # Build contract, exit codes, per-user build directory, uv (slice 7).
 # Uses real git and real make against file:// fixture repos inside the sandbox HOME.
 . "$(dirname "$0")/helpers.sh"

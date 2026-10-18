@@ -1,4 +1,9 @@
 #!/bin/bash
+# Lint note: SC2059 is disabled for the whole file on purpose. The colour variables
+# (RED, GREEN, NC, ...) are escape sequences that are empty when output is not a terminal,
+# and they are embedded in printf format strings throughout.
+# shellcheck disable=SC2059
+set -euo pipefail
 
 # Stamped with the commit by `ucli install`; "dev" when run from a clone.
 UCLI_BUILD_ID="dev"
@@ -18,6 +23,7 @@ if [[ -z "${NO_COLOR:-}" ]]; then
     fi
 fi
 ENV_FILE="$HOME/.ucli_env"
+ORG=""
 
 # Test seams (defaults are the production values)
 UCLI_REGISTRY_URL="${UCLI_REGISTRY_URL:-https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml}"
@@ -68,8 +74,8 @@ is_valid_repo_name() {
 show_version() {
   local id="$UCLI_BUILD_ID" d c
   if [[ "$id" == "dev" ]]; then
-    d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-    c="$(git -C "$d" rev-parse --short HEAD 2>/dev/null)"
+    d="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || true
+    c="$(git -C "$d" rev-parse --short HEAD 2>/dev/null)" || true
     if [[ "$c" =~ ^[0-9a-f]{7,40}$ ]]; then id="dev ($c)"; fi
   fi
   printf 'ucli %s\n' "$id"
@@ -159,7 +165,9 @@ print_path_hint() {
   local dir="$1" shown="$1"
   case "$dir" in "$HOME"/*) shown="\$HOME/${dir#"$HOME"/}" ;; esac
   warn "$dir is not on your PATH, so 'ucli' will not be found yet. Add it with one of:"
+  # shellcheck disable=SC2016  # $PATH is meant literally: it is the line the user pastes
   printf '  bash:  echo '\''export PATH="%s:$PATH"'\'' >> ~/.bashrc   (macOS: ~/.bash_profile)\n' "$shown" >&2
+  # shellcheck disable=SC2016  # as above
   printf '  zsh:   echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$shown" >&2
   printf '  fish:  fish_add_path %s\n' "$shown" >&2
   printf 'then open a new terminal.\n' >&2
@@ -191,15 +199,15 @@ install() {
   fi
   tmp="$dir/.ucli.new.$$"
   # Stamp the commit when run from a git clone (a checkout of the pinned commit).
-  sd="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-  id="$(git -C "$sd" rev-parse HEAD 2>/dev/null)"
+  sd="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || true
+  id="$(git -C "$sd" rev-parse HEAD 2>/dev/null)" || true
   [[ "$id" =~ ^[0-9a-f]{7,40}$ ]] || id=""
   if $UCLI_SUDO cp "$0" "$tmp" \
      && { [[ -z "$id" ]] || sed "s/^UCLI_BUILD_ID=.*/UCLI_BUILD_ID=\"$id\"/" "$0" | $UCLI_SUDO tee "$tmp" > /dev/null; } \
      && $UCLI_SUDO chmod +x "$tmp" && $UCLI_SUDO mv -f "$tmp" "$dir/ucli"; then
       log "ucli installed to $dir."
   else
-      $UCLI_SUDO rm -f "$tmp" > /dev/null 2>&1
+      $UCLI_SUDO rm -f "$tmp" > /dev/null 2>&1 || true
       error "Error installing ucli."
   fi
   dest="$dir/ucli"
@@ -231,8 +239,8 @@ ucli_files() {
 # Uninstall: removes exactly ucli's own file(s), the state dir, ~/.ucli_env, ~/.ucli and
 # the cache build dir. Installed tools are left alone (remove them first with `ucli remove`).
 uninstall() {
-  local f d tools t removed=0 rc=0 sudo_cmd
-  tools=$(awk -F '\t' '$1 != "ucli" && $1 != "" { print $1 }' "$(ucli_state_file)" 2>/dev/null | tr '\n' ' ')
+  local f d tools removed=0 rc=0 sudo_cmd
+  tools=$(awk -F '\t' '$1 != "ucli" && $1 != "" { print $1 }' "$(ucli_state_file)" 2>/dev/null | tr '\n' ' ') || true
   if [[ -n "${tools// /}" ]]; then
     warn "These tools are still installed and will be left in place: ${tools}"
     warn "To remove them, run 'ucli remove <tool>' for each one BEFORE uninstalling (the record of them is deleted below)."
@@ -385,8 +393,7 @@ logout() {
 cleanup() {
     local tmpdir="$1"
     if [[ -d "$tmpdir" ]]; then
-        rm -rf "$tmpdir"
-        if [[ $? -ne 0 ]]; then
+        if ! rm -rf "$tmpdir"; then
             warn "Failed to clean up $tmpdir. You may need to remove it manually."
         fi
     fi
@@ -405,8 +412,7 @@ registry_load() {
         error "curl is required but not installed."
     fi
     local yaml_content
-    yaml_content=$(curl -s "$UCLI_REGISTRY_URL" 2>/dev/null)
-    if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
+    if ! yaml_content=$(curl -s "$UCLI_REGISTRY_URL" 2>/dev/null) || [[ -z "$yaml_content" ]]; then
         return 1
     fi
     REGISTRY_CACHE="$yaml_content"
@@ -422,7 +428,7 @@ registry_load() {
 INDEX_ROWS=""
 INDEX_ALL=0
 index_load() {
-    local tab content header line n r c k y_repo y_ver bad=0 count=0 total
+    local tab content header n r c k y_repo y_ver bad=0 count=0 total
     INDEX_ROWS=""
     INDEX_ALL=0
     [[ -n "$UCLI_INDEX_URL" ]] || return 0
@@ -434,7 +440,7 @@ index_load() {
         warn "Ignoring index.tsv (unexpected header); using apps.yaml"
         return 0
     fi
-    local rows="" seen="" agree=0
+    local rows="" agree=0
     while IFS="$tab" read -r n r c k; do
         k=${k%$'\r'}
         if [[ -z "$n" || -z "$r" || -z "$k" ]] || ! [[ "$c" =~ ^[0-9a-f]{40}$ ]]; then
@@ -480,7 +486,7 @@ registry_names() {
 # Reads REGISTRY_CACHE. Only entries of the `official:` list are considered; an
 # entry's own keys are the ones one level inside its `- name:` line.
 registry_awk() {
-    printf '%s\n' "$REGISTRY_CACHE" | awk -v mode="$1" -v tool="$2" -v key="$3" '
+    printf '%s\n' "$REGISTRY_CACHE" | awk -v mode="$1" -v tool="${2:-}" -v key="${3:-}" '
     function clean(v) {
         sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
         if (v ~ /^".*"$/ || v ~ /^'"'"'.*'"'"'$/) v = substr(v, 2, length(v) - 2)
@@ -658,9 +664,7 @@ list_repos() {
     log "Fetching repositories for $ORG..."
     registry_load || error "Failed to fetch registry data"
     local repos
-    repos=$(fetch_repos)
-
-    if [[ $? -ne 0 ]]; then
+    if ! repos=$(fetch_repos); then
         warn "Failed to fetch repository data"
         if [[ "$menu" == "menu" ]]; then
             read -n 1 -s -r -p "Press ENTER to return to main menu..." || { echo "No input; run 'ucli help'."; exit 1; }
@@ -832,10 +836,12 @@ state_record() {
     dir=$(dirname "$f")
     mkdir -p "$dir" || { warn "Could not create $dir to record $name"; return 1; }
     tmp=$(mktemp "$dir/.installed.XXXXXX") || { warn "Could not record $name"; return 1; }
-    {
+    if ! {
         [[ -f "$f" ]] && awk -F '\t' -v n="$name" '$1 != n && $1 != "ms2md"' "$f"
         printf '%s\t%s\t%s\t%s\n' "$name" "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$path"
-    } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "Could not record $name"; return 1; }
+    } > "$tmp" || ! mv -f "$tmp" "$f"; then
+        rm -f "$tmp"; warn "Could not record $name"; return 1
+    fi
 }
 
 # state_drop <name>: remove the tool's line (same temp-file-and-mv rewrite).
@@ -845,7 +851,9 @@ state_drop() {
     [[ -f "$f" ]] || return 0
     dir=$(dirname "$f")
     tmp=$(mktemp "$dir/.installed.XXXXXX") || { warn "Could not update the state file"; return 1; }
-    awk -F '\t' -v n="$1" '$1 != n' "$f" > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "Could not update the state file"; return 1; }
+    if ! awk -F '\t' -v n="$1" '$1 != n' "$f" > "$tmp" || ! mv -f "$tmp" "$f"; then
+        rm -f "$tmp"; warn "Could not update the state file"; return 1
+    fi
 }
 
 # legacy_tool_path <name>: path of a pre-existing install, found with command -v
@@ -895,9 +903,7 @@ update_tools() {
     log "Fetching repository list..."
     registry_load || error "Failed to fetch registry data"
     local repos
-    repos=$(fetch_repos)
-
-    if [[ $? -ne 0 ]]; then
+    if ! repos=$(fetch_repos); then
         error "Failed to fetch repository data"
     fi
 
@@ -953,9 +959,7 @@ build_all_repos() {
     log "Fetching repository list..."
     registry_load || error "Failed to fetch registry data"
     local repos
-    repos=$(fetch_repos)
-
-    if [[ $? -ne 0 ]]; then
+    if ! repos=$(fetch_repos); then
         error "Failed to fetch repository data"
     fi
 
@@ -964,14 +968,16 @@ build_all_repos() {
         return 0
     fi
 
-    local repo_count=$(echo "$repos" | wc -l)
+    local repo_count
+    repo_count=$(echo "$repos" | wc -l)
     log "Found $repo_count repositories. Starting build process..."
 
     # Convert newline-separated list to space-separated for fetch_and_run
     repos=$(echo "$repos" | tr '\n' ' ')
     
+    # shellcheck disable=SC2086  # deliberate word splitting: one argument per repo
     fetch_and_run $repos
-    
+
     log "Build-all completed!"
 }
 
@@ -1016,7 +1022,7 @@ show_versions() {
         # Check if tool exists in registry
         registry_load || true
         local official_tools
-        official_tools=$(fetch_repos 2>/dev/null)
+        official_tools=$(fetch_repos 2>/dev/null) || true
         if ! echo "$official_tools" | grep -Fxq -- "${tool_arg}"; then
             printf "${RED}Tool '${tool_arg}' not found in UCLI Registry.${NC}\n"
             printf "Use ${GREEN}ucli list${NC} to see available tools.\n"
@@ -1106,7 +1112,7 @@ warn_if_shadowed() {
 }
 
 main() {
-  if [[ -z "$1" ]]; then # Interactive mode
+  if [[ -z "${1:-}" ]]; then # Interactive mode
     if [[ ! -t 0 ]]; then
       show_commands
       printf "Run 'ucli help' for details.\n"
@@ -1136,6 +1142,7 @@ main() {
           login "$org_name" ;;
         2|build)
           read -r -p "Repository names (space-separated): " repos || { echo "No input; run 'ucli help'."; exit 1; }
+          # shellcheck disable=SC2086  # deliberate word splitting: one argument per repo
           fetch_and_run $repos ;;
         3|build-all) build_all_repos ;;
         4|list) list_repos menu ;;
@@ -1155,11 +1162,11 @@ main() {
     case "$1" in
       install) shift; install "$@" ;;
       uninstall) uninstall ;;
-      remove) remove_tool "$2" ;;
-      login) login "$2" ;;
+      remove) remove_tool "${2:-}" ;;
+      login) login "${2:-}" ;;
       logout) logout ;;
       list) list_repos ;;
-      versions) show_versions "$2" ;;
+      versions) show_versions "${2:-}" ;;
       build) shift; fetch_and_run "$@" ;; # Remove 'build' and pass remaining args
       build-all) build_all_repos ;;
       update) update_tools ;;

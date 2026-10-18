@@ -1,0 +1,56 @@
+name: End to end
+
+# The real install path and a real tool build, against real GitHub, in a scratch HOME
+# (tests/e2e.sh). Nightly for the small tools, weekly for mdaudiobook (large download).
+on:
+  schedule:
+    - cron: '17 3 * * *'
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: 'Tools to build, space separated'
+        default: 'mdtexpdf docx2md'
+  pull_request:
+    paths:
+      - 'tests/e2e.sh'
+      - '.github/workflows/e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choose the tools
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_TOOLS: ${{ github.event.inputs.tools }}
+        run: |
+          tools="mdtexpdf docx2md"
+          if [ "$SCHEDULE" = "41 4 * * 1" ]; then tools="mdaudiobook"; fi
+          if [ -n "$INPUT_TOOLS" ]; then tools="$INPUT_TOOLS"; fi
+          echo "E2E_TOOLS=$tools" >> "$GITHUB_ENV"
+          echo "Tools: $tools"
+
+      - name: Install uv (stated precondition)
+        run: command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Put uv on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: End to end in a scratch HOME
+        run: |
+          scratch="$RUNNER_TEMP/e2e-home"
+          mkdir -p "$scratch"
+          # uv stays reachable from the scratch HOME
+          uvdir="$(dirname "$(command -v uv)")"
+          HOME="$scratch" PATH="$uvdir:$PATH" tests/e2e.sh

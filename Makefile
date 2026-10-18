@@ -14,8 +14,8 @@ delete:
 test:
 	tests/run.sh
 
-# shellcheck: only errors block
+# shellcheck: default severity, every finding blocks (version pinned in CI)
 lint:
-	shellcheck -S error ucli.sh tests/*.sh
+	shellcheck ucli.sh tests/*.sh
 
 .PHONY: build rebuild delete test lint

@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016  # test stubs are written as single-quoted scripts
 # Test helpers for ucli. Plain bash, bash 3.2 compatible (macOS /bin/bash).
 # Every test:
 #  - runs ./ucli.sh through its own #!/bin/bash line, never `bash ucli.sh`;
