@@ -2,7 +2,7 @@
 # End to end: the real install path and a real tool build, against real GitHub.
 # Not part of `make test` (it needs the network). Run nightly by .github/workflows/e2e.yml.
 #
-#   HOME must be a scratch directory (the workflow sets one); prerequisite: git, make, curl, uv.
+#   HOME must be a scratch directory (the workflow sets one) and E2E_SCRATCH_HOME=1 says so; prerequisite: git, make, curl, uv.
 #   E2E_TOOLS    tools to build, space separated (default: mdtexpdf docx2md)
 #   E2E_REMOVE   the tool to remove again at the end (default: the last of E2E_TOOLS)
 #   E2E_STRICT_PIN=1  also fail when the installed ucli is not the registry's ucli pin, and when
@@ -24,9 +24,7 @@ bad()  { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 step() { printf '\n== %s\n' "$1"; }
 die()  { bad "$1"; exit 1; }
 
-case "$HOME" in
-  /home/*|/Users/*|/root) [[ -n "${E2E_ALLOW_REAL_HOME:-}" ]] || die "HOME=$HOME looks like a real home; point HOME at a scratch directory (or set E2E_ALLOW_REAL_HOME=1)" ;;
-esac
+[[ -n "${E2E_SCRATCH_HOME:-}" ]] || die "refusing to run in HOME=$HOME: set E2E_SCRATCH_HOME=1 to say it is a scratch directory"
 export PATH="$HOME/.local/bin:$PATH"
 export NO_COLOR=1
 # A scratch HOME has no system copy of ucli; make sure a real one on this machine is not used.

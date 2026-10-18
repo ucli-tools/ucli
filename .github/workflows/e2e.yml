@@ -53,4 +53,4 @@ jobs:
           mkdir -p "$scratch"
           # uv stays reachable from the scratch HOME
           uvdir="$(dirname "$(command -v uv)")"
-          HOME="$scratch" PATH="$uvdir:$PATH" tests/e2e.sh
+          E2E_SCRATCH_HOME=1 HOME="$scratch" PATH="$uvdir:$PATH" tests/e2e.sh
