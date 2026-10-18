@@ -203,25 +203,82 @@ cleanup() {
     fi
 }
 
-# Function to fetch repositories from UCLI Registry
-fetch_repos() {
+# Registry access. The registry is fetched once per command (REGISTRY_CACHE) and
+# parsed by one awk pass that only looks inside the `official:` list: `community:`,
+# `templates:` and anything else is never offered, and tool names match exactly.
+REGISTRY_CACHE=""
+
+# Load the registry into REGISTRY_CACHE. Returns 1 (and prints nothing) on failure,
+# so callers decide how to report it. Call it in the main shell, not in $(...).
+registry_load() {
+    [[ -n "$REGISTRY_CACHE" ]] && return 0
     if ! command -v curl &> /dev/null; then
         error "curl is required but not installed."
     fi
+    local yaml_content
+    yaml_content=$(curl -s "$UCLI_REGISTRY_URL" 2>/dev/null)
+    if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
+        return 1
+    fi
+    REGISTRY_CACHE="$yaml_content"
+    return 0
+}
 
-    # Fetch from UCLI Registry API
-    local registry_url="$UCLI_REGISTRY_URL"
+# registry_awk names | registry_awk field <tool> <key>
+# Reads REGISTRY_CACHE. Only entries of the `official:` list are considered; an
+# entry's own keys are the ones one level inside its `- name:` line.
+registry_awk() {
+    printf '%s\n' "$REGISTRY_CACHE" | awk -v mode="$1" -v tool="$2" -v key="$3" '
+    function clean(v) {
+        sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+        if (v ~ /^".*"$/ || v ~ /^'"'"'.*'"'"'$/) v = substr(v, 2, length(v) - 2)
+        return v
+    }
+    {
+        sub(/\r$/, "")
+        if ($0 ~ /^[ \t]*#/) next
+        match($0, /^ */); ind = RLENGTH
+        rest = substr($0, ind + 1)
+        if (rest == "") next
+        if (!insec) {
+            if (rest ~ /^official:[ \t]*$/) { insec = 1; secind = ind; cur = "" }
+            next
+        }
+        if (ind <= secind && rest !~ /^-/) { insec = 0; cur = ""; next }
+        if (rest ~ /^-[ \t]*name:/) {
+            v = rest; sub(/^-[ \t]*name:/, "", v)
+            cur = clean(v); dashind = ind
+            if (mode == "names") print cur
+            next
+        }
+        if (mode == "field" && cur == tool) {
+            if (ind == dashind + 2) {
+                parent = rest; sub(/:.*/, "", parent)
+                if (index(key, ".") == 0 && index(rest, key ":") == 1) {
+                    v = rest; sub(/^[^:]*:/, "", v)
+                    print clean(v)
+                    exit
+                }
+            } else if (ind > dashind + 2 && index(key, ".") > 0 && (parent "." ) == substr(key, 1, length(parent) + 1) \
+                       && index(rest, substr(key, length(parent) + 2) ":") == 1) {
+                v = rest; sub(/^[^:]*:/, "", v)
+                print clean(v)
+                exit
+            }
+        }
+    }'
+}
 
+# Function to fetch repositories from UCLI Registry
+fetch_repos() {
     log "Fetching tools from UCLI Registry..."
 
-    # Fetch and parse YAML to extract official tool names
-    local yaml_content=$(curl -s "$registry_url" 2>/dev/null)
-    if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
+    if ! registry_load; then
         error "Failed to fetch registry data"
     fi
 
-    # Extract official app names from YAML (simple parsing)
-    local repos=$(echo "$yaml_content" | grep -A 1000 "official:" | grep -B 1000 "community:" | grep "^  - name:" | sed 's/.*name: //' | sort)
+    local repos
+    repos=$(registry_awk names | sort)
 
     if [[ -z "$repos" ]]; then
         warn "No tools found in registry"
@@ -232,28 +289,86 @@ fetch_repos() {
     return 0
 }
 
-# Function to get tool version from registry
+# registry_field <tool> <key>: first value of <key> in the tool's official entry.
+registry_field() {
+    is_valid_repo_name "$1" || return 1
+    registry_awk field "$1" "$2"
+}
+
+# Function to get tool version (the pinned commit) from registry
 get_tool_version() {
     local tool_name="$1"
-    if ! command -v curl &> /dev/null; then
-        error "curl is required but not installed."
+    if ! registry_load; then
+        warn "Failed to fetch registry data"
+        return 1
     fi
 
-    local registry_url="$UCLI_REGISTRY_URL"
-    local yaml_content=$(curl -s "$registry_url")
-
-    if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
-        error "Failed to fetch registry data"
-    fi
-
-    # Extract version for specific tool (simple parsing)
-    local version=$(echo "$yaml_content" | grep -A 20 "name: $tool_name" | grep "version:" | head -1 | sed 's/.*version: //' | tr -d ' ')
+    local version
+    version=$(registry_field "$tool_name" version)
 
     if [[ -z "$version" ]]; then
-        error "Could not find version for tool: $tool_name"
+        warn "Could not find version for tool: $tool_name (not an official tool in the registry)"
+        return 1
+    fi
+    if ! [[ "$version" =~ ^[0-9a-f]{40}$ ]]; then
+        warn "Registry pin for $tool_name is not a full 40-character commit hash: $version"
+        return 1
     fi
 
     echo "$version"
+}
+
+# Clone URL for a tool, built from the `repo:` field of its registry entry.
+get_tool_clone_url() {
+    local repo_field
+    repo_field=$(registry_field "$1" repo)
+    if [[ -z "$repo_field" ]]; then
+        warn "Registry entry for $1 has no repo: field"
+        return 1
+    fi
+    repo_field="${repo_field#https://}"
+    repo_field="${repo_field#http://}"
+    repo_field="${repo_field%.git}"
+    repo_field="${repo_field%/}"
+    if [[ "$repo_field" == github.com/* ]]; then
+        echo "$UCLI_GIT_BASE/${repo_field#github.com/}.git"
+    else
+        echo "https://$repo_field.git"
+    fi
+}
+
+# fetch_pinned <dir> <url> <sha>: leave <dir> checked out (detached) at exactly <sha>.
+# Fast path: git init + fetch --depth 1 of the SHA. If that fails (git older than
+# 2.26, or a server that refuses a fetch by SHA), fall back to a full clone.
+# UCLI_FORCE_FULL_CLONE=1 forces the fallback (used by the tests).
+fetch_pinned() {
+    local dir="$1" url="$2" sha="$3"
+    if [[ -z "${UCLI_FORCE_FULL_CLONE:-}" ]]; then
+        rm -rf "${dir:?}"
+        mkdir -p "$dir" || return 1
+        if git -C "$dir" init --quiet 2>/dev/null \
+            && git -C "$dir" remote add origin "$url" 2>/dev/null \
+            && git -C "$dir" fetch --quiet --depth 1 origin "$sha" 2>/dev/null \
+            && git -C "$dir" checkout --quiet --detach FETCH_HEAD 2>/dev/null \
+            && [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" == "$sha" ]]; then
+            return 0
+        fi
+        warn "Fetching $sha directly failed; trying a full clone instead."
+    fi
+    rm -rf "${dir:?}"
+    if ! git clone --quiet "$url" "$dir" 2>/dev/null; then
+        warn "Could not clone $url"
+        return 1
+    fi
+    if ! git -C "$dir" checkout --quiet --detach "$sha" 2>/dev/null; then
+        warn "Pinned commit $sha does not exist in $url"
+        return 1
+    fi
+    if [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" != "$sha" ]]; then
+        warn "Checked out commit does not match the pin $sha"
+        return 1
+    fi
+    return 0
 }
 
 # Function to install prerequisites
@@ -273,7 +388,9 @@ install_prerequisites() {
 # Function to list repositories
 list_repos() {
     log "Fetching repositories for $ORG..."
-    local repos=$(fetch_repos)
+    registry_load || error "Failed to fetch registry data"
+    local repos
+    repos=$(fetch_repos)
 
     if [[ $? -ne 0 ]]; then
         warn "Failed to fetch repository data"
@@ -296,6 +413,7 @@ fetch_and_run() {
     local original_dir=$(pwd)
     local org="$ORG"
     local tmpdir="/tmp/ucli/$org"
+    local rc=0
 
     # Set trap for cleanup
     trap 'cleanup "$tmpdir"' EXIT
@@ -309,6 +427,9 @@ fetch_and_run() {
         error "Error creating temporary directory $tmpdir"
     fi
 
+    # One registry fetch for the whole command
+    registry_load || error "Failed to fetch registry data"
+
     for repo in "$@"; do
         if [[ "$repo" == .* ]]; then
             warn "Repository '$repo' starts with a dot and will be skipped."
@@ -321,24 +442,24 @@ fetch_and_run() {
 
         cd "$original_dir" || error "Error changing to original directory"
 
-        # Get the specific version (commit hash) from registry
-        local version=$(get_tool_version "$repo")
+        # Pinned commit and clone URL come from the registry entry
+        local version url
+        if ! version=$(get_tool_version "$repo") || ! url=$(get_tool_clone_url "$repo"); then
+            warn "Cannot build ${repo}. Skipping..."
+            rc=1
+            continue
+        fi
 
-        # Clone specific commit quietly for reproducible builds
-        if ! git clone --quiet --depth 1 --branch main "$UCLI_GIT_BASE/$org/$repo.git" "$tmpdir/$repo" 2>/dev/null; then
-            warn "Error cloning repository ${org}/${repo}. Skipping..."
+        # Fetch exactly the pinned commit (not whatever main is today)
+        if ! fetch_pinned "$tmpdir/$repo" "$url" "$version"; then
+            warn "Error fetching ${repo} at ${version}. Skipping..."
+            rc=1
             continue
         fi
 
         cd "$tmpdir/$repo" || {
             error "Error changing to directory $tmpdir/$repo"
         }
-
-        # Checkout the specific commit for reproducible builds (quietly)
-        if ! git checkout --quiet "$version" 2>/dev/null; then
-            warn "Error checking out version $version for ${org}/${repo}. Skipping..."
-            continue
-        fi
 
         log "Building ${repo} (v${version:0:8})..."
 
@@ -357,6 +478,7 @@ fetch_and_run() {
 
     # Remove trap
     trap - EXIT
+    return $rc
 }
 
 # Function to check if a tool is installed
@@ -377,7 +499,9 @@ get_installed_tools() {
 # Update function
 update_tools() {
     log "Fetching repository list..."
-    local repos=$(fetch_repos)
+    registry_load || error "Failed to fetch registry data"
+    local repos
+    repos=$(fetch_repos)
 
     if [[ $? -ne 0 ]]; then
         error "Failed to fetch repository data"
@@ -408,7 +532,9 @@ update_tools() {
 # Function to build all repositories
 build_all_repos() {
     log "Fetching repository list..."
-    local repos=$(fetch_repos)
+    registry_load || error "Failed to fetch registry data"
+    local repos
+    repos=$(fetch_repos)
 
     if [[ $? -ne 0 ]]; then
         error "Failed to fetch repository data"
@@ -440,7 +566,9 @@ show_versions() {
         printf "==================================\n\n"
 
         local installed_tools=$(get_installed_tools)
-        local official_tools=$(fetch_repos 2>/dev/null)
+        registry_load || true
+        local official_tools
+        official_tools=$(fetch_repos 2>/dev/null)
 
         if [[ -z "$installed_tools" ]]; then
             printf "${YELLOW}No UCLI tools are currently installed.${NC}\n"
@@ -451,7 +579,7 @@ show_versions() {
         local found_any=false
         for tool in $installed_tools; do
             # Check if this tool is in our official registry
-            if echo "$official_tools" | grep -q "^${tool}$"; then
+            if echo "$official_tools" | grep -Fxq -- "${tool}"; then
                 found_any=true
                 local version=$(get_tool_version "$tool" 2>/dev/null || echo "unknown")
                 printf "${GREEN}%-15s${NC} %s\n" "$tool:" "${version:0:12}"
@@ -468,43 +596,28 @@ show_versions() {
         printf "=====================================\n\n"
 
         # Check if tool exists in registry
-        local official_tools=$(fetch_repos 2>/dev/null)
-        if ! echo "$official_tools" | grep -q "^${tool_arg}$"; then
+        registry_load || true
+        local official_tools
+        official_tools=$(fetch_repos 2>/dev/null)
+        if ! echo "$official_tools" | grep -Fxq -- "${tool_arg}"; then
             printf "${RED}Tool '${tool_arg}' not found in UCLI Registry.${NC}\n"
             printf "Use ${GREEN}ucli list${NC} to see available tools.\n"
             return 1
         fi
 
-        # Get detailed version info from registry
-        if ! command -v curl &> /dev/null; then
-            error "curl is required but not installed."
-        fi
-
-        local registry_url="$UCLI_REGISTRY_URL"
-        local yaml_content=$(curl -s "$registry_url")
-
-        if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
-            error "Failed to fetch registry data"
-        fi
-
-        # Extract tool information (simple parsing)
-        local tool_section=$(echo "$yaml_content" | grep -A 50 "name: $tool_arg" | head -50)
-        local version=$(echo "$tool_section" | grep "version:" | head -1 | sed 's/.*version: //' | tr -d ' ')
-        local description=$(echo "$tool_section" | grep "description:" | head -1 | sed 's/.*description: //' | sed 's/^"//' | sed 's/"$//')
-        local repo=$(echo "$tool_section" | grep "repo:" | head -1 | sed 's/.*repo: //' | tr -d ' ')
-        local status=$(echo "$tool_section" | grep "status:" | head -1 | sed 's/.*status: //' | tr -d ' ')
+        # Get detailed version info from registry (already loaded by fetch_repos)
+        local version description repo status
+        version=$(registry_field "$tool_arg" version)
+        description=$(registry_field "$tool_arg" description)
+        repo=$(registry_field "$tool_arg" repo)
+        status=$(registry_field "$tool_arg" status)
 
         # Extract version_info if available
-        local commit_date=""
-        local commit_message=""
-        local commit_url=""
+        local commit_date commit_message commit_url
 
-        if echo "$tool_section" | grep -q "version_info:"; then
-            local version_info_section=$(echo "$tool_section" | grep -A 10 "version_info:" | head -10)
-            commit_date=$(echo "$version_info_section" | grep "commit_date:" | head -1 | sed 's/.*commit_date: //' | tr -d ' ')
-            commit_message=$(echo "$version_info_section" | grep "commit_message:" | head -1 | sed 's/.*commit_message: //' | sed 's/^"//' | sed 's/"$//')
-            commit_url=$(echo "$version_info_section" | grep "commit_url:" | head -1 | sed 's/.*commit_url: //' | tr -d ' ')
-        fi
+        commit_date=$(registry_field "$tool_arg" version_info.commit_date)
+        commit_message=$(registry_field "$tool_arg" version_info.commit_message)
+        commit_url=$(registry_field "$tool_arg" version_info.commit_url)
 
         printf "${YELLOW}Name:${NC}         ${tool_arg}\n"
         printf "${YELLOW}Version:${NC}      ${version:-unknown}\n"

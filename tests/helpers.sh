@@ -74,7 +74,8 @@ case "$url" in
   file://*) f="${url#file://}"; [ -f "$f" ] && cat "$f" || exit 37 ;;
   *) echo "$url" >> "'"$SB"'/net.log"; exit 6 ;;
 esac'
-  make_stub git 'echo "git $*" >> "'"$SB"'/calls.log"; exit 0'
+  cp "$TESTS_DIR/fixtures/stub_git.sh" "$SB/bin/git"
+  export UCLI_TEST_SB="$SB"
   make_stub make 'echo "make $*" >> "'"$SB"'/calls.log"; exit 0'
   make_stub sudo 'echo "sudo $*" >> "'"$SB"'/sudo.log"; exit 1'
   make_stub apt 'exit 0'
@@ -84,7 +85,24 @@ esac'
   export UCLI_REGISTRY_URL="$FIXTURE_REGISTRY"
   export UCLI_GIT_BASE="file://$SB/no-such-git-base"
   export UCLI_NO_SLEEP=1
-  unset ORG
+  unset ORG UCLI_FORCE_FULL_CLONE
+}
+
+# registry_with_tools <file> <count>: write a registry with tools tool-1..tool-N
+# (pin = 40 hex digits made of the tool number, repo github.com/ucli-tools/tool-N).
+write_big_registry() {
+  local f="$1" n="$2" i pin
+  {
+    echo "apps:"
+    echo "  official:"
+    i=1
+    while [[ $i -le $n ]]; do
+      pin="$(printf '%040d' "$i")"
+      printf '  - name: tool-%s\n    repo: github.com/ucli-tools/tool-%s\n    description: Tool number %s\n    status: production\n    version: %s\n    version_info:\n      commit_date: 2026-01-01\n' "$i" "$i" "$i" "$pin"
+      i=$((i + 1))
+    done
+    echo "  community: []"
+  } > "$f"
 }
 
 # run [-i stdin-text] args...   runs ./ucli.sh; sets RC; output in $SB/out and $SB/err.
