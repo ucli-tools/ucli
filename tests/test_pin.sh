@@ -137,7 +137,8 @@ t_unreachable_registry_build_fails() {
 t_registry_fetched_once_per_build() {
   run build uclitest-alpha uclitest-beta
   assert_rc 0
-  assert_eq "$(grep -c '^curl ' "$SB/calls.log" | tr -d ' ')" "1" "registry fetches"
+  assert_eq "$(grep -c '^curl .*apps.yaml' "$SB/calls.log" | tr -d ' ')" "1" "registry fetches"
+  assert_eq "$(grep -c '^curl .*index.tsv' "$SB/calls.log" | tr -d ' ')" "1" "index fetches"
 }
 
 # --- fetch by pinned SHA (stub git) ----------------------------------------

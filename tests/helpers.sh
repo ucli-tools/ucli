@@ -87,7 +87,7 @@ esac'
   export UCLI_NO_SLEEP=1
   mkdir -p "$SB/sysbin"
   export UCLI_INSTALL_DIR="$SB/sysbin"
-  unset ORG UCLI_FORCE_FULL_CLONE
+  unset ORG UCLI_FORCE_FULL_CLONE UCLI_INDEX_URL
 }
 
 # registry_with_tools <file> <count>: write a registry with tools tool-1..tool-N

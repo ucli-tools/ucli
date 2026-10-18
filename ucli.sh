@@ -21,6 +21,14 @@ ENV_FILE="$HOME/.ucli_env"
 
 # Test seams (defaults are the production values)
 UCLI_REGISTRY_URL="${UCLI_REGISTRY_URL:-https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml}"
+# index.tsv sits next to apps.yaml; UCLI_INDEX_URL overrides it. When the registry URL
+# does not end in apps.yaml there is no index to try.
+if [[ -z "${UCLI_INDEX_URL+x}" ]]; then
+    case "$UCLI_REGISTRY_URL" in
+        */apps.yaml) UCLI_INDEX_URL="${UCLI_REGISTRY_URL%apps.yaml}index.tsv" ;;
+        *) UCLI_INDEX_URL="" ;;
+    esac
+fi
 UCLI_GIT_BASE="${UCLI_GIT_BASE:-https://github.com}"
 UCLI_UV_INSTALL_URL="${UCLI_UV_INSTALL_URL:-https://astral.sh/uv/install.sh}"
 UCLI_INSTALL_DIR="${UCLI_INSTALL_DIR:-/usr/local/bin}"
@@ -266,7 +274,70 @@ registry_load() {
         return 1
     fi
     REGISTRY_CACHE="$yaml_content"
+    index_load
     return 0
+}
+
+# index.tsv (name<TAB>repo<TAB>commit<TAB>kind, header first) is preferred for names,
+# repo and version. It is never trusted blindly: a missing or malformed file is ignored,
+# and an entry that disagrees with apps.yaml is dropped with a warning, so apps.yaml wins.
+# INDEX_ROWS holds the agreeing rows as name<TAB>repo<TAB>commit lines; INDEX_ALL=1 when
+# every apps.yaml tool has an agreeing row and the index lists nothing else.
+INDEX_ROWS=""
+INDEX_ALL=0
+index_load() {
+    local tab content header line n r c k y_repo y_ver bad=0 count=0 total
+    INDEX_ROWS=""
+    INDEX_ALL=0
+    [[ -n "$UCLI_INDEX_URL" ]] || return 0
+    content=$(curl -sf "$UCLI_INDEX_URL" 2>/dev/null) || return 0
+    [[ -n "$content" ]] || return 0
+    tab=$(printf '\t')
+    header=$(printf '%s\n' "$content" | head -n 1 | tr -d '\r')
+    if [[ "$header" != "#name${tab}repo${tab}commit${tab}kind" ]]; then
+        warn "Ignoring index.tsv (unexpected header); using apps.yaml"
+        return 0
+    fi
+    local rows="" seen="" agree=0
+    while IFS="$tab" read -r n r c k; do
+        k=${k%$'\r'}
+        if [[ -z "$n" || -z "$r" || -z "$k" ]] || ! [[ "$c" =~ ^[0-9a-f]{40}$ ]]; then
+            bad=1; break
+        fi
+        rows="$rows$n$tab$r$tab$c
+"
+        count=$((count + 1))
+    done < <(printf '%s\n' "$content" | tail -n +2 | grep -v '^[[:space:]]*$')
+    if [[ $bad -eq 1 ]]; then
+        warn "Ignoring index.tsv (malformed line); using apps.yaml"
+        return 0
+    fi
+    total=$(registry_awk names | grep -c .)
+    while IFS="$tab" read -r n r c; do
+        [[ -n "$n" ]] || continue
+        y_repo=$(registry_awk field "$n" repo)
+        y_ver=$(registry_awk field "$n" version)
+        if [[ "$y_repo" == "$r" && "$y_ver" == "$c" ]]; then
+            INDEX_ROWS="$INDEX_ROWS$n$tab$r$tab$c
+"
+            agree=$((agree + 1))
+        else
+            warn "index.tsv disagrees with apps.yaml for '$n'; using apps.yaml"
+        fi
+    done <<EOF_ROWS
+$rows
+EOF_ROWS
+    [[ $agree -eq $count && $count -eq $total ]] && INDEX_ALL=1
+    return 0
+}
+
+# registry_names: tool names, from the index when it fully agrees with apps.yaml.
+registry_names() {
+    if [[ $INDEX_ALL -eq 1 ]]; then
+        printf '%s' "$INDEX_ROWS" | cut -f1
+    else
+        registry_awk names
+    fi
 }
 
 # registry_awk names | registry_awk field <tool> <key>
@@ -323,7 +394,7 @@ fetch_repos() {
     fi
 
     local repos
-    repos=$(registry_awk names | sort)
+    repos=$(registry_names | sort)
 
     if [[ -z "$repos" ]]; then
         warn "No tools found in registry"
@@ -337,6 +408,12 @@ fetch_repos() {
 # registry_field <tool> <key>: first value of <key> in the tool's official entry.
 registry_field() {
     is_valid_repo_name "$1" || return 1
+    if [[ -n "$INDEX_ROWS" && ( "$2" == "repo" || "$2" == "version" ) ]]; then
+        local row col=2
+        [[ "$2" == "version" ]] && col=3
+        row=$(printf '%s' "$INDEX_ROWS" | awk -F'\t' -v t="$1" -v c="$col" '$1 == t { print $c; exit }')
+        if [[ -n "$row" ]]; then echo "$row"; return 0; fi
+    fi
     registry_awk field "$1" "$2"
 }
 
@@ -656,7 +733,7 @@ tool_path() {
 # Installed official tools, one per line. Needs the registry loaded.
 get_installed_tools() {
     local tool
-    registry_awk names | sort | while IFS= read -r tool; do
+    registry_names | sort | while IFS= read -r tool; do
         if is_tool_installed "$tool"; then echo "$tool"; fi
     done
 }
