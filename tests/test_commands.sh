@@ -7,7 +7,7 @@ t_help() {
   assert_rc 0
   assert_out_has "UCLI - Universal Command Line Interface Tool"
   local c
-  for c in "Install ucli to /usr/local/bin" "Remove ucli from /usr/local/bin" "Set GitHub organization" \
+  for c in "Install ucli to ~/.local/bin" "Remove ucli, ~/.ucli_env" "Set GitHub organization" \
     "Unset GitHub organization" "List official tools from UCLI Registry" "Show version information for tools" \
     "Build tools from specified GitHub repositories" "Build all tools listed by" "Update all installed tools" \
     "Install prerequisites (Ubuntu/Debian)" "Show this help message"; do
@@ -178,7 +178,7 @@ t_uninstall_when_not_installed() {
   fi
   run uninstall
   assert_rc 0
-  assert_err_has "ucli is not installed in /usr/local/bin."
+  assert_err_has "No ucli file found in"
 }
 
 t_prereq_uses_sudo_apt() {

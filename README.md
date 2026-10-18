@@ -38,7 +38,7 @@ bash ./ucli.sh install
 rm ./ucli.sh
 ```
 
-This will copy the script to `/usr/local/bin`, make it executable then delete the downloaded files. You can then run it from anywhere in your system.
+This will copy the script to `~/.local/bin` (no sudo; an existing `/usr/local/bin/ucli` is updated in place instead), make it executable then delete the downloaded files. You can then run it from anywhere in your system.
 
 ## Usage
 
@@ -51,8 +51,9 @@ Run `ucli` without any arguments to enter the interactive mode. You will be pres
 
 `ucli` supports several command-line options:
 
-* `ucli install`: Installs `ucli` to `/usr/local/bin`.
-* `ucli uninstall`: Uninstalls `ucli` from `/usr/local/bin`.
+* `ucli install`: Installs `ucli` to `~/.local/bin` without sudo. `ucli install --move` moves an existing `/usr/local/bin` copy there.
+* `ucli uninstall`: Removes `ucli`, `~/.ucli_env`, `~/.ucli`, its state and build cache. Installed tools stay.
+* `ucli remove <tool>`: Uninstalls a tool through its `make delete` target.
 * `ucli login`: Logs in to your GitHub organization, storing the organization name in the `ORG` environment variable.
 * `ucli logout`: Logs out of your GitHub organization, removing the `ORG` environment variable.
 * `ucli list`: List the public repos of the organization.

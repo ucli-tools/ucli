@@ -31,7 +31,9 @@ if [[ -z "${UCLI_INDEX_URL+x}" ]]; then
 fi
 UCLI_GIT_BASE="${UCLI_GIT_BASE:-https://github.com}"
 UCLI_UV_INSTALL_URL="${UCLI_UV_INSTALL_URL:-https://astral.sh/uv/install.sh}"
-UCLI_INSTALL_DIR="${UCLI_INSTALL_DIR:-/usr/local/bin}"
+# UCLI_INSTALL_DIR (optional) forces a system install dir; UCLI_LEGACY_BIN names the old
+# system copy (default /usr/local/bin/ucli); UCLI_PREFIX is the user prefix (default ~/.local).
+UCLI_LEGACY_BIN="${UCLI_LEGACY_BIN:-/usr/local/bin/ucli}"
 
 # Pause used by the logging functions: only inside the interactive menu
 # (UCLI_MENU=1), so a person can read each message; UCLI_NO_SLEEP=1 disables it.
@@ -77,8 +79,9 @@ show_version() {
 show_commands() {
   printf "${GREEN}UCLI - Universal Command Line Interface Tool${NC}\n"
   printf "Commands:\n"
-  printf "  ${GREEN}install${NC}                Install ucli to /usr/local/bin\n"
-  printf "  ${GREEN}uninstall${NC}              Remove ucli from /usr/local/bin\n"
+  printf "  ${GREEN}install${NC}                Install ucli to ~/.local/bin, no sudo (--move: leave /usr/local/bin)\n"
+  printf "  ${GREEN}uninstall${NC}              Remove ucli, ~/.ucli_env, ~/.ucli, its state and build cache (tools stay)\n"
+  printf "  ${GREEN}remove <tool>${NC}          Uninstall a tool with its 'make delete' target\n"
   printf "  ${GREEN}login [organization]${NC}   Set GitHub organization (defaults to ucli-tools if not specified)\n"
   printf "                           If already logged in, switches to the specified organization\n"
   printf "  ${GREEN}logout${NC}                 Unset GitHub organization\n"
@@ -90,8 +93,7 @@ show_commands() {
   printf "  ${GREEN}build-all${NC}              Build all tools listed by 'ucli list'\n"
   printf "  ${GREEN}update${NC}                 Update all installed tools\n"
   printf "  ${GREEN}prereq${NC}                 Install prerequisites (Ubuntu/Debian)\n"
-  printf "  ${GREEN}help${NC}                   Show this help message (also --help, -h)\n"
-  printf "  ${GREEN}version${NC}                Show the ucli version (also --version)\n"
+  printf "  ${GREEN}help${NC}                   Show this help message (--help, -h); --version prints the version\n"
 }
 
 # Help function. "menu" as the first argument pauses afterwards (interactive menu only).
@@ -120,13 +122,68 @@ show_help() {
   fi
 }
 
+# Where ucli installs. Sets UCLI_DEST_DIR and UCLI_SUDO ("sudo" or empty).
+#  - UCLI_INSTALL_DIR (test seam / explicit system dir): used as given, with sudo.
+#  - an existing legacy copy (UCLI_LEGACY_BIN, default /usr/local/bin/ucli): updated in
+#    place; sudo only when its directory is not writable.
+#  - otherwise ${UCLI_PREFIX:-$HOME/.local}/bin, never sudo.
+resolve_install() {
+  local legacy="${UCLI_LEGACY_BIN:-/usr/local/bin/ucli}"
+  UCLI_SUDO=""
+  UCLI_IN_PLACE=0
+  if [[ -n "${UCLI_INSTALL_DIR:-}" ]]; then
+    UCLI_DEST_DIR="$UCLI_INSTALL_DIR"
+    UCLI_SUDO="sudo"
+  elif [[ -e "$legacy" ]]; then
+    UCLI_DEST_DIR="$(dirname "$legacy")"
+    UCLI_IN_PLACE=1
+    [[ -w "$UCLI_DEST_DIR" ]] || UCLI_SUDO="sudo"
+  else
+    UCLI_DEST_DIR="${UCLI_PREFIX:-$HOME/.local}/bin"
+  fi
+}
+
+# The system bin dir that ucli and legacy tool installs may live in.
+system_bin_dir() {
+  if [[ -n "${UCLI_INSTALL_DIR:-}" ]]; then echo "$UCLI_INSTALL_DIR"; else dirname "${UCLI_LEGACY_BIN:-/usr/local/bin/ucli}"; fi
+}
+
+# True when <dir> is a PATH entry.
+dir_on_path() {
+  case ":$PATH:" in *":$1:"*) return 0 ;; esac
+  return 1
+}
+
+# Print how to put <dir> on PATH (macOS does not have ~/.local/bin on it).
+print_path_hint() {
+  local dir="$1" shown="$1"
+  case "$dir" in "$HOME"/*) shown="\$HOME/${dir#"$HOME"/}" ;; esac
+  warn "$dir is not on your PATH, so 'ucli' will not be found yet. Add it with one of:"
+  printf '  bash:  echo '\''export PATH="%s:$PATH"'\'' >> ~/.bashrc   (macOS: ~/.bash_profile)\n' "$shown" >&2
+  printf '  zsh:   echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$shown" >&2
+  printf '  fish:  fish_add_path %s\n' "$shown" >&2
+  printf 'then open a new terminal.\n' >&2
+}
+
 # Install script. Atomic: the new file is written next to the target (same
 # directory, so the final mv is a rename) and moved into place; the running script
 # is never overwritten in place, and a failed step leaves the old binary untouched.
+# `install --move` is the opt-in move of a system copy to the user directory.
 install() {
-  local dir="$UCLI_INSTALL_DIR" tmp id sd
+  local move=0 dir tmp id sd legacy dest
+  if [[ "${1:-}" == "--move" ]]; then move=1; shift; fi
+  if [[ $# -gt 0 ]]; then error "Unknown option for install: $1 (usage: ucli install [--move])"; fi
+  legacy="${UCLI_LEGACY_BIN:-/usr/local/bin/ucli}"
+  if [[ $move -eq 1 ]]; then
+    [[ -e "$legacy" ]] || error "There is no system copy at $legacy to move."
+    # The new copy goes to the user directory, no sudo.
+    UCLI_INSTALL_DIR="" UCLI_LEGACY_BIN="/nonexistent/ucli.none" resolve_install
+  else
+    resolve_install
+  fi
+  dir="$UCLI_DEST_DIR"
   if [[ ! -d "$dir" ]]; then
-    if sudo mkdir -p "$dir"; then
+    if $UCLI_SUDO mkdir -p "$dir"; then
       log "Directory $dir created successfully."
     else
       error "Error creating directory $dir."
@@ -137,27 +194,106 @@ install() {
   sd="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
   id="$(git -C "$sd" rev-parse HEAD 2>/dev/null)"
   [[ "$id" =~ ^[0-9a-f]{7,40}$ ]] || id=""
-  if sudo cp "$0" "$tmp" \
-     && { [[ -z "$id" ]] || sed "s/^UCLI_BUILD_ID=.*/UCLI_BUILD_ID=\"$id\"/" "$0" | sudo tee "$tmp" > /dev/null; } \
-     && sudo chmod +x "$tmp" && sudo mv -f "$tmp" "$dir/ucli"; then
+  if $UCLI_SUDO cp "$0" "$tmp" \
+     && { [[ -z "$id" ]] || sed "s/^UCLI_BUILD_ID=.*/UCLI_BUILD_ID=\"$id\"/" "$0" | $UCLI_SUDO tee "$tmp" > /dev/null; } \
+     && $UCLI_SUDO chmod +x "$tmp" && $UCLI_SUDO mv -f "$tmp" "$dir/ucli"; then
       log "ucli installed to $dir."
   else
-      sudo rm -f "$tmp" > /dev/null 2>&1
+      $UCLI_SUDO rm -f "$tmp" > /dev/null 2>&1
       error "Error installing ucli."
   fi
+  dest="$dir/ucli"
+  if [[ $move -eq 1 ]]; then
+    local lsudo=""
+    [[ -w "$(dirname "$legacy")" ]] || lsudo="sudo"
+    if $lsudo rm -f "$legacy"; then
+      log "Removed the old copy $legacy; only $dest remains."
+    else
+      error "ucli was installed to $dest, but removing the old copy $legacy failed. Remove it by hand so only one ucli is on PATH."
+    fi
+    state_record ucli "$id" "$dest"
+  elif [[ $UCLI_IN_PLACE -eq 1 ]]; then
+    log "Updated the existing system copy in place. To move it to ~/.local/bin (no sudo from then on), run: ucli install --move"
+  fi
+  if ! dir_on_path "$dir"; then print_path_hint "$dir"; fi
 }
 
-# Uninstall script
+# ucli_files: every place ucli's own file may live (state record, user dir, system dir).
+ucli_files() {
+  resolve_install
+  {
+    state_field ucli 4
+    echo "${UCLI_PREFIX:-$HOME/.local}/bin/ucli"
+    echo "$(system_bin_dir)/ucli"
+  } | awk 'NF && !seen[$0]++'
+}
+
+# Uninstall: removes exactly ucli's own file(s), the state dir, ~/.ucli_env, ~/.ucli and
+# the cache build dir. Installed tools are left alone (remove them first with `ucli remove`).
 uninstall() {
-  if [[ -f "/usr/local/bin/ucli" ]]; then
-    if sudo rm /usr/local/bin/ucli; then
-      log "ucli successfully uninstalled."
-    else
-      error "Error uninstalling ucli."
-    fi
-  else
-    warn "ucli is not installed in /usr/local/bin."
+  local f d tools t removed=0 rc=0 sudo_cmd
+  tools=$(awk -F '\t' '$1 != "ucli" && $1 != "" { print $1 }' "$(ucli_state_file)" 2>/dev/null | tr '\n' ' ')
+  if [[ -n "${tools// /}" ]]; then
+    warn "These tools are still installed and will be left in place: ${tools}"
+    warn "To remove them, run 'ucli remove <tool>' for each one BEFORE uninstalling (the record of them is deleted below)."
   fi
+  while IFS= read -r f; do
+    [[ -n "$f" && ( -e "$f" || -L "$f" ) ]] || continue
+    sudo_cmd=""
+    [[ -w "$(dirname "$f")" ]] || sudo_cmd="sudo"
+    if $sudo_cmd rm -f "$f"; then
+      log "Removed $f"
+      removed=1
+    else
+      warn "Could not remove $f"
+      rc=1
+    fi
+  done < <(ucli_files)
+  [[ $removed -eq 1 ]] || warn "No ucli file found in $(system_bin_dir) or ${UCLI_PREFIX:-$HOME/.local}/bin."
+  for d in "$(dirname "$(ucli_state_file)")" "$ENV_FILE" "$HOME/.ucli" "${XDG_CACHE_HOME:-$HOME/.cache}/ucli"; do
+    if [[ -e "$d" || -L "$d" ]]; then
+      if rm -rf "${d:?}"; then log "Removed $d"; else warn "Could not remove $d"; rc=1; fi
+    fi
+  done
+  [[ $rc -eq 0 ]] && log "ucli uninstalled."
+  return $rc
+}
+
+# remove <tool>: fetch the recorded commit (or the pin), run `make delete`, drop the
+# state line. Refuses when the tool has no delete target.
+remove_tool() {
+  local tool="${1:-}" rec pin url bdir cache_root rc=0 had_path
+  [[ -n "$tool" ]] || error "Usage: ucli remove <tool>"
+  is_valid_repo_name "$tool" || error "Invalid tool name: $tool. Only alphanumeric characters and hyphens are allowed."
+  if [[ "$tool" == "ucli" ]]; then error "Use 'ucli uninstall' to remove ucli itself."; fi
+  is_tool_installed "$tool" || error "$tool is not installed."
+  registry_load || error "Failed to fetch registry data"
+  rec=$(installed_commit "$tool")
+  if [[ -n "$rec" ]]; then pin="$rec"; else pin=$(get_tool_version "$tool") || error "Cannot find a commit for $tool."; fi
+  url=$(get_tool_clone_url "$tool") || error "Cannot find the repository for $tool."
+  cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/ucli"
+  mkdir -p "$cache_root" || error "Error creating build directory $cache_root"
+  bdir=$(mktemp -d "$cache_root/build.XXXXXX") || error "Error creating a build directory in $cache_root"
+  UCLI_BUILD_DIR="$bdir"
+  trap 'cleanup "$UCLI_BUILD_DIR"' EXIT
+  fetch_pinned "$bdir/$tool" "$url" "$pin" || error "Error fetching $tool at ${pin:0:8}."
+  had_path=$(cd "$bdir/$tool" || exit 1; pwd)
+  if [[ ! -f "$had_path/Makefile" && ! -f "$had_path/makefile" && ! -f "$had_path/GNUmakefile" ]] \
+     || ! (cd "$had_path" && LC_ALL=C make -n delete > /dev/null 2>&1); then
+    error "$tool has no 'delete' target, so ucli cannot remove it. Nothing was run. Remove it by hand."
+  fi
+  log "Running make delete in $tool..."
+  # The user bin dir first on PATH, so a delete target that calls the tool itself finds it.
+  if ! (cd "$had_path" && PATH="$(user_bin_dir):$PATH" make delete); then
+    rc=1
+    warn "make delete failed for $tool; its record is kept."
+  else
+    state_drop "$tool"
+    log "Removed $tool."
+  fi
+  cleanup "$bdir"
+  trap - EXIT
+  return $rc
 }
 
 # Login
@@ -650,7 +786,7 @@ fetch_and_run() {
 
         log "Build successful for $repo!"
         local where
-        if [[ "$repo" == "ucli" ]]; then where="$UCLI_INSTALL_DIR/ucli"; else where=$(tool_path "$repo" || echo "$(user_bin_dir)/$repo"); fi
+        if [[ "$repo" == "ucli" ]]; then resolve_install; where="$UCLI_DEST_DIR/ucli"; else where=$(tool_path "$repo" || echo "$(user_bin_dir)/$repo"); fi
         state_record "$repo" "$version" "$where"
         built="$built $repo"
     done
@@ -702,13 +838,23 @@ state_record() {
     } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "Could not record $name"; return 1; }
 }
 
+# state_drop <name>: remove the tool's line (same temp-file-and-mv rewrite).
+state_drop() {
+    local f dir tmp
+    f=$(ucli_state_file)
+    [[ -f "$f" ]] || return 0
+    dir=$(dirname "$f")
+    tmp=$(mktemp "$dir/.installed.XXXXXX") || { warn "Could not update the state file"; return 1; }
+    awk -F '\t' -v n="$1" '$1 != n' "$f" > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "Could not update the state file"; return 1; }
+}
+
 # legacy_tool_path <name>: path of a pre-existing install, found with command -v
 # only when it lives in the system bin dir or the user bin dir.
 legacy_tool_path() {
     local found
     found=$(command -v "$1" 2>/dev/null) || return 1
     [[ "$found" == /* ]] || return 1
-    if [[ "$found" == "$UCLI_INSTALL_DIR/$1" || "$found" == "$(user_bin_dir)/$1" ]]; then
+    if [[ "$found" == "$(system_bin_dir)/$1" || "$found" == "$(user_bin_dir)/$1" ]]; then
         echo "$found"
         return 0
     fi
@@ -767,7 +913,8 @@ update_tools() {
             log "Updating ucli itself first..."
             if fetch_and_run ucli; then
                 log "ucli updated; continuing with the new version."
-                UCLI_SELF_UPDATED=1 exec "$UCLI_INSTALL_DIR/ucli" update
+                resolve_install
+                UCLI_SELF_UPDATED=1 exec "$UCLI_DEST_DIR/ucli" update
             fi
             rc=1
         fi
@@ -946,6 +1093,18 @@ show_versions() {
 }
 
 # Main function
+# Warn when this is an installed copy (stamped, not a clone) and another ucli comes
+# first on PATH. A clone (make build, tests) never warns.
+warn_if_shadowed() {
+  [[ "$UCLI_BUILD_ID" != "dev" ]] || return 0
+  local first
+  first=$(command -v ucli 2>/dev/null) || return 0
+  [[ "$first" == /* ]] || return 0
+  if [[ ! "$first" -ef "$0" ]]; then
+    warn "Another ucli shadows this file: running $0, but 'ucli' on PATH is $first. Keep only one."
+  fi
+}
+
 main() {
   if [[ -z "$1" ]]; then # Interactive mode
     if [[ ! -t 0 ]]; then
@@ -992,9 +1151,11 @@ main() {
       esac
     done
   else # Command-line mode
+    case "$1" in help|--help|-h|version|--version|-V|install|uninstall) ;; *) warn_if_shadowed ;; esac
     case "$1" in
-      install) install ;;
+      install) shift; install "$@" ;;
       uninstall) uninstall ;;
+      remove) remove_tool "$2" ;;
       login) login "$2" ;;
       logout) logout ;;
       list) list_repos ;;

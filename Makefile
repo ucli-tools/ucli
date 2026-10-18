@@ -5,12 +5,10 @@ INSTALL_NAME := $(basename $(SCRIPT_NAME))
 build:
 	bash $(SCRIPT_NAME) install
 
-rebuild:
-	$(INSTALL_NAME) uninstall
-	bash $(SCRIPT_NAME) install
-	
+rebuild: build
+
 delete:
-	$(INSTALL_NAME) uninstall
+	bash $(SCRIPT_NAME) uninstall
 
 # Tests (plain bash, run through ucli.sh's own #!/bin/bash line)
 test:
