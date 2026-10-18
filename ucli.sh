@@ -98,7 +98,7 @@ show_commands() {
   printf "                           Example: ucli build ucli gits\n"
   printf "  ${GREEN}build-all${NC}              Build all tools listed by 'ucli list'\n"
   printf "  ${GREEN}update${NC}                 Update all installed tools\n"
-  printf "  ${GREEN}prereq${NC}                 Install prerequisites (Ubuntu/Debian)\n"
+  printf "  ${GREEN}prereq${NC}                 Install prerequisites (apt, dnf, pacman, brew)\n"
   printf "  ${GREEN}help${NC}                   Show this help message (--help, -h); --version prints the version\n"
 }
 
@@ -308,6 +308,9 @@ remove_tool() {
 login() {
   # Check if an organization name was provided as an argument
   local new_org="$1"
+  if [[ -n "$new_org" ]]; then
+    log "Note: pinned versions always come from the ucli-tools registry, whatever organization you log in as."
+  fi
   local current_org=""
   
   # If we have an existing login, read it
@@ -635,14 +638,30 @@ fetch_pinned() {
     return 0
 }
 
+# Package manager used by prereq: UCLI_PKG_MANAGER (test seam) or the first found.
+detect_pkg_manager() {
+    local pm
+    if [[ -n "${UCLI_PKG_MANAGER:-}" ]]; then echo "$UCLI_PKG_MANAGER"; return 0; fi
+    for pm in apt dnf pacman brew; do
+        if command -v "$pm" > /dev/null 2>&1; then echo "$pm"; return 0; fi
+    done
+    return 1
+}
+
 # Function to install prerequisites
 install_prerequisites() {
     log "Installing prerequisites..."
-    if ! command -v apt &> /dev/null; then
-        error "This function only works on Debian/Ubuntu systems"
-    fi
-
-    if sudo apt update && sudo apt install -y make git curl file tree; then
+    local pm
+    pm=$(detect_pkg_manager) || error "No supported package manager found (apt, dnf, pacman or brew). Install make, git, curl, file and tree yourself."
+    local ok=0
+    case "$pm" in
+        apt) sudo apt update && sudo apt install -y make git curl file tree && ok=1 ;;
+        dnf) sudo dnf install -y make git curl file tree && ok=1 ;;
+        pacman) sudo pacman -S --needed --noconfirm make git curl file tree && ok=1 ;;
+        brew) brew install make git curl tree && ok=1 ;;
+        *) error "Unsupported package manager: $pm" ;;
+    esac
+    if [[ $ok -eq 1 ]]; then
         log "Prerequisites installed successfully"
     else
         error "Failed to install prerequisites"
@@ -687,6 +706,23 @@ tool_needs_uv() {
         docx2md|mdaudiobook) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# requires_missing <tool>: prints the registry entry's `requires:` programs that are not
+# installed (space separated). The value may be `uv`, `uv pandoc`, `uv, pandoc` or `[uv, pandoc]`.
+requires_missing() {
+    local raw item missing=""
+    raw=$(registry_field "$1" requires) || raw=""
+    raw=$(printf '%s' "$raw" | tr '[],' '   ')
+    for item in $raw; do
+        is_valid_repo_name "$item" || continue
+        if [[ "$item" == "uv" ]]; then
+            have_uv || missing="$missing $item"
+        else
+            command -v "$item" > /dev/null 2>&1 || missing="$missing $item"
+        fi
+    done
+    printf '%s' "${missing# }"
 }
 
 # uv may sit in ~/.local/bin or ~/.cargo/bin without being on PATH yet
@@ -738,6 +774,15 @@ fetch_and_run() {
         if tool_needs_uv "$repo" && ! have_uv; then
             warn "$repo needs uv, which is not installed. Install it with: curl -LsSf $UCLI_UV_INSTALL_URL | sh   (or run: ucli prereq)"
             failed="$failed $repo (uv missing)"
+            rc=1
+            continue
+        fi
+
+        local missing
+        missing=$(requires_missing "$repo")
+        if [[ -n "$missing" ]]; then
+            warn "$repo needs $missing, which is not installed. Install it first (ucli prereq covers the common ones)."
+            failed="$failed $repo ($missing missing)"
             rc=1
             continue
         fi
@@ -1130,7 +1175,7 @@ main() {
       printf "  5. ${GREEN}logout${NC}    - Unset your GitHub organization\n"
       printf "  6. ${GREEN}help${NC}      - Show help information\n"
       printf "  7. ${GREEN}update${NC}    - Update all installed tools\n"
-      printf "  8. ${GREEN}prereq${NC}    - Install prerequisites (Ubuntu/Debian)\n"
+      printf "  8. ${GREEN}prereq${NC}    - Install prerequisites (apt, dnf, pacman, brew)\n"
       printf "  9. ${GREEN}versions${NC}  - Show version information for tools\n"
       printf "  10. ${GREEN}exit${NC}     - Exit ucli\n\n"
 

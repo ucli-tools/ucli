@@ -10,7 +10,7 @@ t_help() {
   for c in "Install ucli to ~/.local/bin" "Remove ucli, ~/.ucli_env" "Set GitHub organization" \
     "Unset GitHub organization" "List official tools from UCLI Registry" "Show version information for tools" \
     "Build tools from specified GitHub repositories" "Build all tools listed by" "Update all installed tools" \
-    "Install prerequisites (Ubuntu/Debian)" "Show this help message"; do
+    "Install prerequisites (apt, dnf, pacman, brew)" "Show this help message"; do
     assert_out_has "$c"
   done
   assert_out_has "License: Apache 2.0"
