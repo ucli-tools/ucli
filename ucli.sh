@@ -66,7 +66,7 @@ show_help() {
   printf "License: Apache 2.0\n"
   printf "Registry: https://registry.ucli.tools\n"
   printf "Repository: https://github.com/ucli-tools/ucli\n\n"
-  read -r -p "${YELLOW}Press ENTER to return to main menu (interactive mode) or exit (command-line mode)...${NC}"
+  read -r -p "${YELLOW}Press ENTER to return to main menu (interactive mode) or exit (command-line mode)...${NC}" || true
 }
 
 # Install script
@@ -123,7 +123,7 @@ login() {
       fi
       # No new org specified, but we're already logged in
       log "Currently logged in as $current_org"
-      read -r -p "Enter new organization (or press ENTER to keep $current_org): " new_org
+      read -r -p "Enter new organization (or press ENTER to keep $current_org): " new_org || { echo "No input; run 'ucli help'."; exit 1; }
       if [[ -z "$new_org" ]]; then
         log "Keeping current login as $current_org"
         return 0
@@ -138,7 +138,7 @@ login() {
   if [[ -z "$new_org" ]]; then
     # No org provided as argument, prompt for one
     while true; do
-      read -r -p "User/Organization (required): " new_org
+      read -r -p "User/Organization (required): " new_org || { echo "No input; run 'ucli help'."; exit 1; }
       if [[ -z "$new_org" ]]; then
         warn "Organization name cannot be empty."
       else
@@ -268,14 +268,14 @@ list_repos() {
 
     if [[ $? -ne 0 ]]; then
         warn "Failed to fetch repository data"
-        read -n 1 -s -r -p "Press ENTER to return to main menu..."
+        read -n 1 -s -r -p "Press ENTER to return to main menu..." || { echo "No input; run 'ucli help'."; exit 1; }
         return 1
     fi
 
     echo "$repos"
     log "Repository list displayed"
     log "Press ENTER to return to main menu..."
-    read -r
+    read -r || { echo "No input; run 'ucli help'."; exit 1; }
 }
 
 # Function to fetch and run (modified to handle multiple repos)
@@ -540,6 +540,10 @@ show_versions() {
 # Main function
 main() {
   if [[ -z "$1" ]]; then # Interactive mode
+    if [[ ! -t 0 ]]; then
+      show_help
+      exit 0
+    fi
     while true; do
       clear
       printf "${GREEN}Welcome to UCLI, the Universal Command Line Interface Tool!${NC}\n\n"
@@ -555,14 +559,14 @@ main() {
       printf "  9. ${GREEN}versions${NC}  - Show version information for tools\n"
       printf "  10. ${GREEN}exit${NC}     - Exit ucli\n\n"
 
-      read -r -p "Enter your choice: " choice
+      read -r -p "Enter your choice: " choice || { echo "No input; run 'ucli help'."; exit 1; }
 
       case "$choice" in
         1|login)
-          read -r -p "Organization name (leave empty to be prompted): " org_name
+          read -r -p "Organization name (leave empty to be prompted): " org_name || { echo "No input; run 'ucli help'."; exit 1; }
           login "$org_name" ;;
         2|build)
-          read -r -p "Repository names (space-separated): " repos
+          read -r -p "Repository names (space-separated): " repos || { echo "No input; run 'ucli help'."; exit 1; }
           fetch_and_run $repos ;;
         3|build-all) build_all_repos ;;
         4|list) list_repos ;;
@@ -571,7 +575,7 @@ main() {
         7|update) update_tools ;;
         8|prereq) install_prerequisites ;;
         9|versions)
-          read -r -p "Tool name (or --all for all installed tools): " tool_name
+          read -r -p "Tool name (or --all for all installed tools): " tool_name || { echo "No input; run 'ucli help'."; exit 1; }
           show_versions "$tool_name" ;;
         10|exit) exit 0 ;;
         *) printf "${RED}Invalid choice. Try 'help' for more information.${NC}\n" ;;
