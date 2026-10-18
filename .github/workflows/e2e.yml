@@ -48,6 +48,9 @@ jobs:
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: End to end in a scratch HOME
+        env:
+          # The ucli pin has merged: fail when the installed ucli is not the registry pin.
+          E2E_STRICT_PIN: "1"
         run: |
           scratch="$RUNNER_TEMP/e2e-home"
           mkdir -p "$scratch"
