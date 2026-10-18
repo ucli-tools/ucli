@@ -8,7 +8,12 @@ on:
     branches: [ main ]
 
 jobs:
+  # A red commit must never reach the registry: the dispatch waits for green tests.
+  test:
+    uses: ./.github/workflows/test.yml
+
   trigger-registry-update:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Trigger ucli-registry update

@@ -7,20 +7,29 @@ YELLOW=$(printf '\033[0;33m')
 NC=$(printf '\033[0m')
 ENV_FILE="$HOME/.ucli_env"
 
+# Test seams (defaults are the production values)
+UCLI_REGISTRY_URL="${UCLI_REGISTRY_URL:-https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml}"
+UCLI_GIT_BASE="${UCLI_GIT_BASE:-https://github.com}"
+
+# Pause used by the logging functions; UCLI_NO_SLEEP=1 disables it
+nap() {
+    [[ -n "${UCLI_NO_SLEEP:-}" ]] || sleep 1
+}
+
 # Logging functions for consistent output formatting
 log() {
     echo -e "${GREEN}[UPDATE]${NC} $1" >&2
-    sleep 1
+    nap
 }
 
 warn() {
     echo -e "${YELLOW}[WARNING]${NC} $1" >&2
-    sleep 1
+    nap
 }
 
 error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
-    sleep 1
+    nap
     exit 1
 }
 
@@ -201,7 +210,7 @@ fetch_repos() {
     fi
 
     # Fetch from UCLI Registry API
-    local registry_url="https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml"
+    local registry_url="$UCLI_REGISTRY_URL"
 
     log "Fetching tools from UCLI Registry..."
 
@@ -230,7 +239,7 @@ get_tool_version() {
         error "curl is required but not installed."
     fi
 
-    local registry_url="https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml"
+    local registry_url="$UCLI_REGISTRY_URL"
     local yaml_content=$(curl -s "$registry_url")
 
     if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then
@@ -316,7 +325,7 @@ fetch_and_run() {
         local version=$(get_tool_version "$repo")
 
         # Clone specific commit quietly for reproducible builds
-        if ! git clone --quiet --depth 1 --branch main "https://github.com/$org/$repo.git" "$tmpdir/$repo" 2>/dev/null; then
+        if ! git clone --quiet --depth 1 --branch main "$UCLI_GIT_BASE/$org/$repo.git" "$tmpdir/$repo" 2>/dev/null; then
             warn "Error cloning repository ${org}/${repo}. Skipping..."
             continue
         fi
@@ -471,7 +480,7 @@ show_versions() {
             error "curl is required but not installed."
         fi
 
-        local registry_url="https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml"
+        local registry_url="$UCLI_REGISTRY_URL"
         local yaml_content=$(curl -s "$registry_url")
 
         if [[ $? -ne 0 ]] || [[ -z "$yaml_content" ]]; then

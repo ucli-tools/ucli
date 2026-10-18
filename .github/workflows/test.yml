@@ -1,0 +1,53 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest runs /bin/bash 3.2, the floor ucli must keep working on
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show bash versions
+        run: |
+          /bin/bash --version | head -n 1
+          bash --version | head -n 1
+
+      - name: Install shellcheck
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            echo "shellcheck already present"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install shellcheck
+          else
+            sudo apt-get update && sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+
+      - name: Lint (shellcheck, errors only)
+        run: make lint
+
+      - name: Banned bash-4 features
+        run: tests/check_bash4.sh
+
+      - name: Tests
+        run: make test
+
+  bash4-grep:
+    name: banned bash-4 features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/check_bash4.sh

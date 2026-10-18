@@ -1,0 +1,17 @@
+declare -A map
+local -A map2
+mapfile -t lines < file
+readarray -t lines < file
+echo "${x,,}"
+echo "${x^^}"
+cmd |& tee out
+case $x in a) echo a ;& b) echo b ;; esac
+case $x in a) echo a ;;& b) echo b ;; esac
+echo "${arr[-1]}"
+declare -n ref=other
+local -n ref2=other
+cmd &>> out
+echo "${x@Q}"
+echo "$EPOCHSECONDS"
+coproc foo { cat; }
+[[ -v name ]]

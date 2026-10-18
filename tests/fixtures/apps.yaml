@@ -1,0 +1,34 @@
+metadata:
+  version: 1.0.0
+  description: Fixture registry for the ucli tests (not the real registry)
+apps:
+  official:
+  - name: uclitest-alpha
+    repo: github.com/ucli-tools/uclitest-alpha
+    description: Alpha fixture tool
+    pattern: cli
+    status: production
+    maintainer: ucli-tools
+    tags:
+    - cli
+    version: 1111111111111111111111111111111111111111
+    version_info:
+      commit_date: 2026-01-02 03:04:05 UTC
+      commit_message: 'Alpha commit message'
+      commit_url: https://example.invalid/alpha/commit/1111
+      updated_at: 2026-01-02 03:04:06 UTC
+  - name: uclitest-beta
+    repo: github.com/ucli-tools/uclitest-beta
+    description: Beta fixture tool
+    pattern: cli
+    status: production
+    maintainer: ucli-tools
+    version: 2222222222222222222222222222222222222222
+  - name: uclitest-gamma
+    repo: github.com/ucli-tools/uclitest-gamma
+    description: Gamma fixture tool
+    pattern: cli
+    status: production
+    maintainer: ucli-tools
+    version: 3333333333333333333333333333333333333333
+  community: []

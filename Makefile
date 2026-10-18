@@ -11,3 +11,13 @@ rebuild:
 	
 delete:
 	$(INSTALL_NAME) uninstall
+
+# Tests (plain bash, run through ucli.sh's own #!/bin/bash line)
+test:
+	tests/run.sh
+
+# shellcheck: only errors block
+lint:
+	shellcheck -S error ucli.sh tests/*.sh
+
+.PHONY: build rebuild delete test lint
