@@ -10,6 +10,7 @@ ENV_FILE="$HOME/.ucli_env"
 # Test seams (defaults are the production values)
 UCLI_REGISTRY_URL="${UCLI_REGISTRY_URL:-https://raw.githubusercontent.com/ucli-tools/ucli-registry/main/registry/apps.yaml}"
 UCLI_GIT_BASE="${UCLI_GIT_BASE:-https://github.com}"
+UCLI_UV_INSTALL_URL="${UCLI_UV_INSTALL_URL:-https://astral.sh/uv/install.sh}"
 
 # Pause used by the logging functions; UCLI_NO_SLEEP=1 disables it
 nap() {
@@ -383,6 +384,15 @@ install_prerequisites() {
     else
         error "Failed to install prerequisites"
     fi
+
+    # uv (needed by docx2md and mdaudiobook), installed for the user, no sudo
+    if have_uv; then
+        log "uv is already installed"
+    elif curl -LsSf "$UCLI_UV_INSTALL_URL" | sh; then
+        log "uv installed"
+    else
+        warn "Could not install uv. Install it yourself: curl -LsSf $UCLI_UV_INSTALL_URL | sh"
+    fi
 }
 
 # Function to list repositories
@@ -404,32 +414,48 @@ list_repos() {
     read -r || { echo "No input; run 'ucli help'."; exit 1; }
 }
 
-# Function to fetch and run (modified to handle multiple repos)
+# Tools that need uv before they can be built
+tool_needs_uv() {
+    case "$1" in
+        docx2md|mdaudiobook) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# uv may sit in ~/.local/bin or ~/.cargo/bin without being on PATH yet
+have_uv() {
+    command -v uv > /dev/null 2>&1 || [[ -x "$HOME/.local/bin/uv" ]] || [[ -x "$HOME/.cargo/bin/uv" ]]
+}
+
+# Build directory of the running command (global: the EXIT trap cannot see locals)
+UCLI_BUILD_DIR=""
+
+# Build one or more tools. Each tool is fetched at its registry pin and built with
+# `make build` (never any other make goal). Exit 0 only if every tool built.
 fetch_and_run() {
     if ! check_login; then
         return 1
     fi
-
-    local original_dir=$(pwd)
-    local org="$ORG"
-    local tmpdir="/tmp/ucli/$org"
-    local rc=0
-
-    # Set trap for cleanup
-    trap 'cleanup "$tmpdir"' EXIT
-
-    # Clean up existing temporary directory if it exists
-    if [[ -d "$tmpdir" ]]; then
-        cleanup "$tmpdir"
+    if ! is_valid_repo_name "$ORG"; then
+        error "Invalid organization name: $ORG. Only alphanumeric characters and hyphens are allowed."
     fi
 
-    if ! mkdir -p "$tmpdir"; then
-        error "Error creating temporary directory $tmpdir"
+    local original_dir
+    original_dir=$(pwd)
+    local rc=0 built="" failed="" reason
+
+    # Per-user cache dir, unique per run, removed when the command ends (even on error)
+    local cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/ucli"
+    if ! mkdir -p "$cache_root"; then
+        error "Error creating build directory $cache_root"
     fi
+    UCLI_BUILD_DIR=$(mktemp -d "$cache_root/build.XXXXXX") || error "Error creating a build directory in $cache_root"
+    trap 'cleanup "$UCLI_BUILD_DIR"' EXIT
 
     # One registry fetch for the whole command
     registry_load || error "Failed to fetch registry data"
 
+    local repo
     for repo in "$@"; do
         if [[ "$repo" == .* ]]; then
             warn "Repository '$repo' starts with a dot and will be skipped."
@@ -442,42 +468,69 @@ fetch_and_run() {
 
         cd "$original_dir" || error "Error changing to original directory"
 
+        if tool_needs_uv "$repo" && ! have_uv; then
+            warn "$repo needs uv, which is not installed. Install it with: curl -LsSf $UCLI_UV_INSTALL_URL | sh   (or run: ucli prereq)"
+            failed="$failed $repo (uv missing)"
+            rc=1
+            continue
+        fi
+
         # Pinned commit and clone URL come from the registry entry
         local version url
         if ! version=$(get_tool_version "$repo") || ! url=$(get_tool_clone_url "$repo"); then
             warn "Cannot build ${repo}. Skipping..."
+            failed="$failed $repo (not in registry or bad entry)"
             rc=1
             continue
         fi
 
         # Fetch exactly the pinned commit (not whatever main is today)
-        if ! fetch_pinned "$tmpdir/$repo" "$url" "$version"; then
+        if ! fetch_pinned "$UCLI_BUILD_DIR/$repo" "$url" "$version"; then
             warn "Error fetching ${repo} at ${version}. Skipping..."
+            failed="$failed $repo (fetch failed)"
             rc=1
             continue
         fi
 
-        cd "$tmpdir/$repo" || {
-            error "Error changing to directory $tmpdir/$repo"
+        cd "$UCLI_BUILD_DIR/$repo" || {
+            error "Error changing to directory $UCLI_BUILD_DIR/$repo"
         }
 
         log "Building ${repo} (v${version:0:8})..."
 
-        log "Running make in $repo..."
-        if ! make; then
-            warn "Error executing Makefile in $repo. Skipping..."
+        # The contract is `make build`: a Makefile must exist and know the target.
+        # Decided by exit status, never by reading make's message.
+        reason=""
+        if [[ ! -f Makefile && ! -f makefile && ! -f GNUmakefile ]]; then
+            reason="no Makefile"
+        elif ! LC_ALL=C make -n build > /dev/null 2>&1; then
+            reason="no build target"
+        fi
+        if [[ -n "$reason" ]]; then
+            warn "$repo does not follow the ucli contract (no build target): $reason. Nothing was run."
+            failed="$failed $repo ($reason)"
+            rc=1
+            continue
+        fi
+
+        log "Running make build in $repo..."
+        if ! make build; then
+            warn "Error executing make build in $repo. Skipping..."
+            failed="$failed $repo (make build failed)"
+            rc=1
             continue
         fi
 
         log "Build successful for $repo!"
+        built="$built $repo"
     done
 
     # Clean up at the end
     cd "$original_dir" || error "Error returning to original directory"
-    cleanup "$tmpdir"
-
-    # Remove trap
+    cleanup "$UCLI_BUILD_DIR"
     trap - EXIT
+
+    log "built:${built:- none}; failed:${failed:- none}"
     return $rc
 }
 

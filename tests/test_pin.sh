@@ -238,7 +238,8 @@ make_remote() {
   "${g[@]}" init --quiet
   "${g[@]}" symbolic-ref HEAD refs/heads/main
   echo one > "$r/file.txt"
-  "${g[@]}" add file.txt
+  printf 'build:\n\t@true\n' > "$r/Makefile"
+  "${g[@]}" add file.txt Makefile
   "${g[@]}" commit --quiet -m one
   OLD_SHA="$("${g[@]}" rev-parse HEAD)"
   echo two > "$r/file.txt"
